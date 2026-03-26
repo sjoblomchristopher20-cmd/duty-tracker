@@ -7,7 +7,7 @@ users = [
 ]
 
 tasks = [
-	{"id": 1, "title": "Mop hallway", "points": 10, "assigned_to": "Christopher, "completed": False},
+	{"id": 1, "title": "Mop hallway", "points": 10, "assigned_to": "Christopher", "completed": False},
 ]
 
 HTML = """
