@@ -122,7 +122,7 @@ def add_task():
 		"title": title,
 		"points": points,
 		"assigned_to": assigned_to,
-		"complete": False
+		"completed": False
 	})
 	return redirect(url_for("home"))
 
