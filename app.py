@@ -3,7 +3,7 @@ from flask import Flask, request, redirect, url_for, render_template_string
 app = Flask(__name__)
 
 users = [
-	{"name": "Christopher", "point": 0},
+	{"name": "Christopher", "points": 0},
 ]
 
 tasks = [
@@ -16,38 +16,13 @@ HTML = """
 <head>
 	<title>Duty Tracker</title>
 	<style>
-		body {
-			font-family: Arial, sans-serif;
-			margin: 30px;
-			}
-		h1, h2 {
-			margin-bottom: 10px;
-		}
-		form {
-			margin-bottom: 20px;
-			padding: 12px;
-			border: 1px solid #ccc;
-			width: 350px;
-		}
-		input, select, button {
-			margin: 5px 0;
-			padding: 8px;
-			width: 100%;
-		}
-		table {
-			border-collapse: collapse;
-			width: 100%;
-			margin-bottom: 25px;
-		}
-		th, td {
-			border: 1px solid #ccc;
-			padding: 10px;
-			text-align: left;
-		}
-		.done {
-			color: green;
-			font-weight: bold;
-		}
+		body { font-family: Arial, sans-serif; margin: 30px; }
+		h1, h2 { margin-bottom: 10px; }
+		form { margin-bottom: 20px;	padding: 12px; border: 1px solid #ccc; width: 350px; }
+		input, select, button { margin: 5px 0; padding: 8px; width: 100%; }
+		table {	border-collapse: collapse; width: 100%; margin-bottom: 25px; }
+		th, td { border: 1px solid #ccc; padding: 10px; text-align: left; }
+		.done { color: green; font-weight: bold; }
 	</style>
 </head>
 <body>
@@ -132,6 +107,23 @@ def add_user():
 	name = request.form["name"].strip()
 	if name and not any (u["name"].lower() ==name.lower() for u in users):
 		users.append({"name": name, "points": 0})
+	return redirect(url_for("home"))
+
+@app.route("/add_task", methods=["POST"])
+def add_task():
+	title = request.form["title"].strip()
+	points = int(request.form["points"])
+	assigned_to = request.form["assigned_to"]
+
+	new_id = max([t["id"] for t in tasks], default=0) + 1
+
+	tasks.append({
+		"id": new_id,
+		"title": title:
+		"points": points,
+		"assigned_to": assigned to,
+		"complete": False
+	})
 	return redirect(url_for("home"))
 
 @app.route("/complete_task?<int:task_id>", methods=["POST"])
