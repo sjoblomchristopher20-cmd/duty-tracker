@@ -60,7 +60,7 @@ HTML = """
 			<td>{{ task.title }}</td>
 			<td>{{ task.points }}</td>
 			<td>{{ task.assigned_to }}</td>
-			</td>
+			<td>
 				{% if task.completed %}
 					<span class="done>Completed</span>
 				{% else %}
@@ -119,16 +119,16 @@ def add_task():
 
 	tasks.append({
 		"id": new_id,
-		"title": title:
+		"title": title,
 		"points": points,
-		"assigned_to": assigned to,
+		"assigned_to": assigned_to,
 		"complete": False
 	})
 	return redirect(url_for("home"))
 
-@app.route("/complete_task?<int:task_id>", methods=["POST"])
+@app.route("/complete_task/<int:task_id>", methods=["POST"])
 def complete_task(task_id):
-	for tasks in tasks:
+	for task in tasks:
 		if task["id"] == task_id and not task["completed"]:
 			task["completed"] = True
 			for user in users:
