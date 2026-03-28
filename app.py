@@ -16,6 +16,8 @@ tasks = [
     }
 ]
 
+completed_tasks = []
+
 HTML = """
 <!doctype html>
 <html>
@@ -36,6 +38,7 @@ HTML = """
             padding: 12px;
             border: 1px solid #ccc;
             width: 350px;
+            background: #f9f9f9;
         }
 
         input, select, button {
@@ -57,13 +60,13 @@ HTML = """
             text-align: left;
         }
 
-        .done {
-            color: green;
+        .pending {
+            color: darkred;
             font-weight: bold;
         }
 
-        .pending {
-            color: darkred;
+        .done {
+            color: green;
             font-weight: bold;
         }
     </style>
@@ -89,35 +92,25 @@ HTML = """
         <button type="submit">Add Task</button>
     </form>
 
-    <h2>Tasks</h2>
+    <h2>Active Tasks</h2>
     <table>
         <tr>
             <th>Task</th>
             <th>Points</th>
             <th>Assigned To</th>
             <th>Status</th>
-            <th>Actions</th>
+            <th>Action</th>
         </tr>
         {% for task in tasks %}
         <tr>
             <td>{{ task.title }}</td>
             <td>{{ task.points }}</td>
             <td>{{ task.assigned_to }}</td>
+            <td><span class="pending">Pending</span></td>
             <td>
-                {% if task.completed %}
-                    <span class="done">Completed</span>
-                {% else %}
-                    <span class="pending">Pending</span>
-                {% endif %}
-            </td>
-            <td>
-                {% if not task.completed %}
                 <form method="POST" action="/complete_task/{{ task.id }}">
                     <button type="submit">Complete</button>
                 </form>
-                {% else %}
-                    -
-                {% endif %}
             </td>
         </tr>
         {% endfor %}
@@ -136,6 +129,24 @@ HTML = """
         </tr>
         {% endfor %}
     </table>
+
+    <h2>Completed Tasks</h2>
+    <table>
+        <tr>
+            <th>Task</th>
+            <th>Points</th>
+            <th>Assigned To</th>
+            <th>Status</th>
+        </tr>
+        {% for task in completed_tasks %}
+        <tr>
+            <td>{{ task.title }}</td>
+            <td>{{ task.points }}</td>
+            <td>{{ task.assigned_to }}</td>
+            <td><span class="done">Completed</span></td>
+        </tr>
+        {% endfor %}
+    </table>
 </body>
 </html>
 """
@@ -148,6 +159,7 @@ def home():
         HTML,
         users=users,
         tasks=tasks,
+        completed_tasks=completed_tasks,
         leaderboard=leaderboard,
     )
 
@@ -183,9 +195,8 @@ def add_task():
 
 @app.route("/complete_task/<int:task_id>", methods=["POST"])
 def complete_task(task_id):
-    for task in tasks:
-        if task["id"] == task_id and not task["completed"]:
-            task["completed"] = True
+    for i, task in enumerate(tasks):
+        if task["id"] == task_id:
             for user in users:
                 if user["name"] == task["assigned_to"]:
                     user["points"] += task["points"]
