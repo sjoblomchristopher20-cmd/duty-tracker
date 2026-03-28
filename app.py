@@ -157,7 +157,10 @@ def can_delete_open_task(task, user):
     return bool(
         user
         and task["status"] == STATUS_AVAILABLE
-        and task["created_by"] == user["display_name"]
+        and (
+            task["created_by"] == user["display_name"]
+            or is_master_admin(user)
+        )
     )
 
 
@@ -168,12 +171,16 @@ def can_force_delete(user):
 def can_see_task(task, user):
     if not user:
         return False
+
     if is_master_admin(user):
         return task["status"] == STATUS_AVAILABLE
+
     if task["status"] != STATUS_AVAILABLE:
         return False
+
     if task["claim_access"] == "All":
         return True
+
     return task["claim_access"] == user["section"]
 
 
@@ -192,12 +199,20 @@ def can_submit_task(task, user):
 def can_approve_task(task, approver):
     if not can_create_tasks(approver):
         return False
+
     if task["status"] != STATUS_PENDING:
         return False
+
     if task["claimed_by"] == approver["display_name"]:
         return False
+
     if is_master_admin(approver):
         return True
+
+    # If task is section-locked, only that section's NCOs can approve it.
+    if task["claim_access"] != "All":
+        if approver["section"] != task["claim_access"]:
+            return False
 
     creator_level = task["created_by_rank"]
     claimant_level = task["claimed_by_rank"] or 0
@@ -208,12 +223,16 @@ def can_approve_task(task, approver):
     if creator_level >= 3 and claimant_level == 1 and approver_level >= 2:
         return True
 
-    # Normal rule: approver must outrank creator.
+    # Otherwise approver must outrank creator.
     return approver_level > creator_level
 
 
-def build_leaderboard():
+def build_leaderboard(section_filter="All"):
     leaderboard_users = [u for u in users if not u.get("is_master_admin")]
+
+    if section_filter != "All":
+        leaderboard_users = [u for u in leaderboard_users if u["section"] == section_filter]
+
     return sorted(
         leaderboard_users,
         key=lambda u: (-u["points"], -u["rank_level"], u["last_name"], u["first_name"])
@@ -422,12 +441,79 @@ HTML = """
             background: #e8f0fe;
             border-color: #0b57d0;
         }
+
+        .section-buttons {
+            margin: 14px 0 18px 0;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .section-buttons a {
+            text-decoration: none;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            background: #f7f7f7;
+            color: #111;
+        }
+
+        .section-buttons a.active {
+            background: #e8f0fe;
+            border-color: #0b57d0;
+        }
     </style>
 </head>
 <body>
     {% if not current_user %}
-        <h1>Duty Tracker Login</h1>
+        <h1>Duty Tracker</h1>
+
+        <div class="section-buttons">
+            {% for option in public_section_options %}
+                <a href="/?public_section={{ option }}" class="{% if public_section == option %}active{% endif %}">
+                    {{ option }}
+                </a>
+            {% endfor %}
+        </div>
+
+        <div class="grid-2">
+            <div>
+                <h2>Individual Leaderboard{% if public_section != "All" %} - {{ public_section }}{% endif %}</h2>
+                <table>
+                    <tr>
+                        <th>Name</th>
+                        <th>Section</th>
+                        <th>Points</th>
+                    </tr>
+                    {% for user in leaderboard %}
+                    <tr>
+                        <td>{{ user.display_name }}</td>
+                        <td>{{ user.section }}</td>
+                        <td>{{ user.points }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+
+            <div>
+                <h2>Section Leaderboard</h2>
+                <table>
+                    <tr>
+                        <th>Section</th>
+                        <th>Total Points</th>
+                    </tr>
+                    {% for row in section_totals %}
+                    <tr>
+                        <td>{{ row.section }}</td>
+                        <td>{{ row.points }}</td>
+                    </tr>
+                    {% endfor %}
+                </table>
+            </div>
+        </div>
+
         <form class="login-box" method="POST" action="/login">
+            <h2>Login</h2>
+            <input type="hidden" name="public_section" value="{{ public_section }}">
             <input type="text" name="username" placeholder="Username" required>
             <input type="password" name="password" placeholder="Password" required>
             <button type="submit">Login</button>
@@ -793,12 +879,9 @@ def home():
     auto_archive_old_tasks()
 
     current_user = get_current_user()
-    if not current_user:
-        return render_template_string(
-            HTML,
-            current_user=None,
-            login_error=session.pop("login_error", None),
-        )
+    public_section = request.args.get("public_section", "All")
+    if public_section not in ["All"] + SECTIONS:
+        public_section = "All"
 
     history_tab = request.args.get("history_tab", "approved")
     if history_tab not in ["approved", "archived"]:
@@ -808,7 +891,18 @@ def home():
     filter_completed_section = request.args.get("filter_completed_section", "").strip()
     filter_origin = request.args.get("filter_origin", "").strip()
 
-    leaderboard = build_leaderboard()
+    if not current_user:
+        return render_template_string(
+            HTML,
+            current_user=None,
+            login_error=session.pop("login_error", None),
+            public_section=public_section,
+            public_section_options=["All"] + SECTIONS,
+            leaderboard=build_leaderboard(public_section),
+            section_totals=build_section_totals(),
+        )
+
+    leaderboard = build_leaderboard("All")
     section_totals = build_section_totals()
 
     available_tasks = [
@@ -884,6 +978,7 @@ def home():
 def login():
     username = request.form["username"].strip()
     password = request.form["password"]
+    public_section = request.form.get("public_section", "All")
 
     user = get_user_by_username(username)
     if user and user["password"] == password:
@@ -891,7 +986,7 @@ def login():
         return redirect(url_for("home"))
 
     session["login_error"] = "Invalid username or password."
-    return redirect(url_for("home"))
+    return redirect(url_for("home", public_section=public_section))
 
 
 @app.route("/logout", methods=["POST"])
