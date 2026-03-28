@@ -27,10 +27,16 @@ HTML = """
         body {
             font-family: Arial, sans-serif;
             margin: 30px;
+            background: #ffffff;
+            color: #111111;
         }
 
         h1, h2 {
             margin-bottom: 10px;
+        }
+
+        h2 {
+            margin-top: 30px;
         }
 
         form {
@@ -52,15 +58,17 @@ HTML = """
             border-collapse: collapse;
             width: 100%;
             margin-bottom: 25px;
-            h2 {
-                margin-bottom: 30px;
-            }
         }
 
         th, td {
             border: 1px solid #ccc;
             padding: 10px;
             text-align: left;
+            vertical-align: middle;
+        }
+
+        th {
+            background: #f2f2f2;
         }
 
         .pending {
@@ -71,6 +79,25 @@ HTML = """
         .done {
             color: green;
             font-weight: bold;
+        }
+
+        .empty-note {
+            color: #666;
+            font-style: italic;
+            margin-top: 8px;
+        }
+
+        td form {
+            margin: 0;
+            padding: 0;
+            border: none;
+            width: auto;
+            background: transparent;
+        }
+
+        td button {
+            width: auto;
+            min-width: 100px;
         }
     </style>
 </head>
@@ -100,7 +127,7 @@ HTML = """
     <h2>Add Task</h2>
     <form method="POST" action="/add_task">
         <input type="text" name="title" placeholder="Task title" required>
-        <input type="number" name="points" placeholder="Points" required min="1">
+        <input type="number" name="points" placeholder="Points" min="1" required>
         <select name="assigned_to" required>
             {% for user in users %}
                 <option value="{{ user.name }}">{{ user.name }}</option>
@@ -110,6 +137,7 @@ HTML = """
     </form>
 
     <h2>Active Tasks</h2>
+    {% if tasks %}
     <table>
         <tr>
             <th>Task</th>
@@ -132,8 +160,12 @@ HTML = """
         </tr>
         {% endfor %}
     </table>
+    {% else %}
+    <p class="empty-note">No active tasks right now.</p>
+    {% endif %}
 
     <h2>Completed Tasks</h2>
+    {% if completed_tasks %}
     <table>
         <tr>
             <th>Task</th>
@@ -150,6 +182,9 @@ HTML = """
         </tr>
         {% endfor %}
     </table>
+    {% else %}
+    <p class="empty-note">No completed tasks yet.</p>
+    {% endif %}
 </body>
 </html>
 """
@@ -171,8 +206,11 @@ def home():
 def add_user():
     name = request.form["name"].strip()
 
-    if name and not any(u["name"].lower() == name.lower() for u in users):
-        users.append({"name": name, "points": 0})
+    if name and not any(user["name"].lower() == name.lower() for user in users):
+        users.append({
+            "name": name,
+            "points": 0,
+        })
 
     return redirect(url_for("home"))
 
@@ -183,7 +221,7 @@ def add_task():
     points = int(request.form["points"])
     assigned_to = request.form["assigned_to"]
 
-    new_id = max((t["id"] for t in tasks), default=0) + 1
+    new_id = max((task["id"] for task in tasks), default=0) + 1
 
     tasks.append({
         "id": new_id,
@@ -205,8 +243,10 @@ def complete_task(task_id):
                     user["points"] += task["points"]
                     break
 
-            task["completed"] = True
-            completed_tasks.append(task)
+            completed_task = task.copy()
+            completed_task["completed"] = True
+            completed_tasks.append(completed_task)
+
             tasks.pop(i)
             break
 
