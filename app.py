@@ -83,11 +83,6 @@ def now_utc():
     return datetime.utcnow()
 
 
-def format_display_name(first_name, last_name, rank):
-    first_initial = first_name[0].upper() if first_name else ""
-    return f"{rank} {last_name}, {first_initial}"
-
-
 def parse_iso_date(value):
     if not value:
         return None
@@ -97,15 +92,9 @@ def parse_iso_date(value):
         return None
 
 
-def auto_archive_old_tasks():
-    cutoff = now_utc() - timedelta(days=30)
-    for task in tasks:
-        if task["status"] == STATUS_APPROVED and task["approved_date"]:
-            approved_dt = parse_iso_date(task["approved_date"])
-            if approved_dt and approved_dt <= cutoff:
-                task["status"] = STATUS_ARCHIVED
-                task["archived_date"] = now_utc().isoformat()
-                task["last_action"] = "Auto-archived after 30 days"
+def format_display_name(first_name, last_name, rank):
+    first_initial = first_name[0].upper() if first_name else ""
+    return f"{rank} {last_name}, {first_initial}"
 
 
 def get_user_by_username(username):
@@ -142,7 +131,7 @@ def is_msg_plus(user):
 
 
 def can_create_tasks(user):
-    return is_sgt_plus(user) or is_master_admin(user)
+    return is_master_admin(user) or is_sgt_plus(user)
 
 
 def can_create_users(user):
@@ -153,19 +142,19 @@ def can_reset_passwords(user):
     return is_master_admin(user)
 
 
-def can_delete_open_task(task, user):
-    return bool(
-        user
-        and task["status"] == STATUS_AVAILABLE
-        and (
-            task["created_by"] == user["display_name"]
-            or is_master_admin(user)
-        )
-    )
-
-
 def can_force_delete(user):
     return is_master_admin(user)
+
+
+def auto_archive_old_tasks():
+    cutoff = now_utc() - timedelta(days=30)
+    for task in tasks:
+        if task["status"] == STATUS_APPROVED and task["approved_date"]:
+            approved_dt = parse_iso_date(task["approved_date"])
+            if approved_dt and approved_dt <= cutoff:
+                task["status"] = STATUS_ARCHIVED
+                task["archived_date"] = now_utc().isoformat()
+                task["last_action"] = "Auto-archived after 30 days"
 
 
 def can_see_task(task, user):
@@ -191,16 +180,40 @@ def can_claim_task(task, user):
 def can_submit_task(task, user):
     return bool(
         user
-        and task["status"] == STATUS_CLAIMED
         and task["claimed_by"] == user["display_name"]
+        and task["status"] == STATUS_CLAIMED
     )
 
 
-def can_approve_task(task, approver):
-    if not can_create_tasks(approver):
+def can_delete_open_task(task, user):
+    return bool(
+        user
+        and task["status"] == STATUS_AVAILABLE
+        and (
+            task["created_by"] == user["display_name"]
+            or is_master_admin(user)
+        )
+    )
+
+
+def can_see_pending_task(task, user):
+    if not user or task["status"] != STATUS_PENDING:
         return False
 
-    if task["status"] != STATUS_PENDING:
+    if is_master_admin(user):
+        return True
+
+    if not is_sgt_plus(user):
+        return False
+
+    if task["claim_access"] == "All":
+        return True
+
+    return user["section"] == task["claim_access"]
+
+
+def can_approve_task(task, approver):
+    if not can_see_pending_task(task, approver):
         return False
 
     if task["claimed_by"] == approver["display_name"]:
@@ -209,17 +222,20 @@ def can_approve_task(task, approver):
     if is_master_admin(approver):
         return True
 
-    # If task is section-locked, only that section's NCOs can approve it.
-    if task["claim_access"] != "All":
-        if approver["section"] != task["claim_access"]:
-            return False
+    # If locked, only that section's NCOs can approve.
+    if task["claim_access"] != "All" and approver["section"] != task["claim_access"]:
+        return False
 
     creator_level = task["created_by_rank"]
     claimant_level = task["claimed_by_rank"] or 0
     approver_level = approver["rank_level"]
 
-    # Special delegated rule:
-    # If SSG+ created the task and SPC/lower completed it, SGT can approve.
+    # Creator can approve as long as they are not the claimant.
+    if task["created_by"] == approver["display_name"]:
+        return True
+
+    # Delegated rule:
+    # If SSG+ created it and SPC/lower completed it, SGT+ can approve.
     if creator_level >= 3 and claimant_level == 1 and approver_level >= 2:
         return True
 
@@ -228,13 +244,12 @@ def can_approve_task(task, approver):
 
 
 def build_leaderboard(section_filter="All"):
-    leaderboard_users = [u for u in users if not u.get("is_master_admin")]
-
+    board_users = [u for u in users if not u.get("is_master_admin")]
     if section_filter != "All":
-        leaderboard_users = [u for u in leaderboard_users if u["section"] == section_filter]
+        board_users = [u for u in board_users if u["section"] == section_filter]
 
     return sorted(
-        leaderboard_users,
+        board_users,
         key=lambda u: (-u["points"], -u["rank_level"], u["last_name"], u["first_name"])
     )
 
@@ -475,41 +490,19 @@ HTML = """
             {% endfor %}
         </div>
 
-        <div class="grid-2">
-            <div>
-                <h2>Individual Leaderboard{% if public_section != "All" %} - {{ public_section }}{% endif %}</h2>
-                <table>
-                    <tr>
-                        <th>Name</th>
-                        <th>Section</th>
-                        <th>Points</th>
-                    </tr>
-                    {% for user in leaderboard %}
-                    <tr>
-                        <td>{{ user.display_name }}</td>
-                        <td>{{ user.section }}</td>
-                        <td>{{ user.points }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-
-            <div>
-                <h2>Section Leaderboard</h2>
-                <table>
-                    <tr>
-                        <th>Section</th>
-                        <th>Total Points</th>
-                    </tr>
-                    {% for row in section_totals %}
-                    <tr>
-                        <td>{{ row.section }}</td>
-                        <td>{{ row.points }}</td>
-                    </tr>
-                    {% endfor %}
-                </table>
-            </div>
-        </div>
+        <h2>Section Leaderboard{% if public_section != "All" %} - {{ public_section }}{% endif %}</h2>
+        <table>
+            <tr>
+                <th>Section</th>
+                <th>Total Points</th>
+            </tr>
+            {% for row in public_section_rows %}
+            <tr>
+                <td>{{ row.section }}</td>
+                <td>{{ row.points }}</td>
+            </tr>
+            {% endfor %}
+        </table>
 
         <form class="login-box" method="POST" action="/login">
             <h2>Login</h2>
@@ -706,10 +699,12 @@ HTML = """
                 </td>
                 <td>{{ task.rejection_note or "-" }}</td>
                 <td>
-                    {% if can_submit_map[task.id] %}
+                    {% if task.status == "claimed" and can_submit_map[task.id] %}
                     <form method="POST" action="/submit_task/{{ task.id }}">
-                        <button type="submit">Mark Done</button>
+                        <button type="submit">Submit for Approval</button>
                     </form>
+                    {% elif task.status == "pending_approval" %}
+                    <span class="note">Waiting on approval</span>
                     {% else %}
                     <span class="note">Waiting</span>
                     {% endif %}
@@ -718,7 +713,7 @@ HTML = """
             {% endfor %}
         </table>
         {% else %}
-        <p class="empty-note">You have no claimed tasks right now.</p>
+        <p class="empty-note">You have no active tasks right now.</p>
         {% endif %}
 
         {% if can_create_tasks %}
@@ -892,14 +887,17 @@ def home():
     filter_origin = request.args.get("filter_origin", "").strip()
 
     if not current_user:
+        section_rows = build_section_totals()
+        if public_section != "All":
+            section_rows = [row for row in section_rows if row["section"] == public_section]
+
         return render_template_string(
             HTML,
             current_user=None,
             login_error=session.pop("login_error", None),
             public_section=public_section,
             public_section_options=["All"] + SECTIONS,
-            leaderboard=build_leaderboard(public_section),
-            section_totals=build_section_totals(),
+            public_section_rows=section_rows,
         )
 
     leaderboard = build_leaderboard("All")
@@ -916,7 +914,10 @@ def home():
         and task["status"] in [STATUS_CLAIMED, STATUS_PENDING]
     ]
 
-    pending_tasks = [task for task in tasks if task["status"] == STATUS_PENDING]
+    pending_tasks = [
+        task for task in tasks
+        if can_see_pending_task(task, current_user)
+    ]
 
     approved_history = [task for task in tasks if task["status"] == STATUS_APPROVED]
     archived_history = [task for task in tasks if task["status"] == STATUS_ARCHIVED]
@@ -949,8 +950,8 @@ def home():
         can_reset_passwords=can_reset_passwords(current_user),
         can_create_tasks=can_create_tasks(current_user),
         can_see_archived=is_sgt_plus(current_user) or is_master_admin(current_user),
-        can_force_delete=can_force_delete(current_user),
         is_msg_plus=is_msg_plus(current_user),
+        can_force_delete=can_force_delete(current_user),
         leaderboard=leaderboard,
         section_totals=section_totals,
         sections=SECTIONS,
@@ -971,6 +972,9 @@ def home():
         can_delete_map=can_delete_map,
         resettable_users=resettable_users,
         login_error=None,
+        public_section=public_section,
+        public_section_options=["All"] + SECTIONS,
+        public_section_rows=[],
     )
 
 
