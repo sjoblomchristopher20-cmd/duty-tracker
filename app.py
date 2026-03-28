@@ -142,6 +142,10 @@ def can_reset_passwords(user):
     return is_master_admin(user)
 
 
+def can_delete_users(user):
+    return is_master_admin(user)
+
+
 def can_force_delete(user):
     return is_master_admin(user)
 
@@ -222,7 +226,6 @@ def can_approve_task(task, approver):
     if is_master_admin(approver):
         return True
 
-    # If locked, only that section's NCOs can approve.
     if task["claim_access"] != "All" and approver["section"] != task["claim_access"]:
         return False
 
@@ -230,40 +233,35 @@ def can_approve_task(task, approver):
     claimant_level = task["claimed_by_rank"] or 0
     approver_level = approver["rank_level"]
 
-    # Creator can approve as long as they are not the claimant.
     if task["created_by"] == approver["display_name"]:
         return True
 
-    # Delegated rule:
-    # If SSG+ created it and SPC/lower completed it, SGT+ can approve.
     if creator_level >= 3 and claimant_level == 1 and approver_level >= 2:
         return True
 
-    # Otherwise approver must outrank creator.
     return approver_level > creator_level
 
 
-def build_leaderboard(section_filter="All"):
+def build_leaderboard():
     board_users = [u for u in users if not u.get("is_master_admin")]
-    if section_filter != "All":
-        board_users = [u for u in board_users if u["section"] == section_filter]
-
     return sorted(
         board_users,
         key=lambda u: (-u["points"], -u["rank_level"], u["last_name"], u["first_name"])
     )
 
 
-def build_section_totals():
+def build_section_totals(section_filter="All"):
     totals = {section: 0 for section in SECTIONS}
     for user in users:
         if not user.get("is_master_admin"):
             totals[user["section"]] += user["points"]
 
-    return sorted(
-        [{"section": section, "points": points} for section, points in totals.items()],
-        key=lambda row: (-row["points"], row["section"])
-    )
+    rows = [{"section": section, "points": points} for section, points in totals.items()]
+
+    if section_filter != "All":
+        rows = [row for row in rows if row["section"] == section_filter]
+
+    return sorted(rows, key=lambda row: (-row["points"], row["section"]))
 
 
 def filter_history(history_tasks, name_filter="", completed_section_filter="", origin_filter=""):
@@ -514,6 +512,7 @@ HTML = """
                 <p class="note">{{ login_error }}</p>
             {% endif %}
         </form>
+
     {% else %}
         <div class="topbar">
             <div>
@@ -604,6 +603,32 @@ HTML = """
                 <button type="submit">Reset Password</button>
             </form>
         </div>
+
+        <h2>All Users</h2>
+        <table>
+            <tr>
+                <th>Name</th>
+                <th>Username</th>
+                <th>Rank</th>
+                <th>Section</th>
+                <th>Points</th>
+                <th>Action</th>
+            </tr>
+            {% for user in manageable_users %}
+            <tr>
+                <td>{{ user.display_name }}</td>
+                <td>{{ user.username }}</td>
+                <td>{{ user.rank }}</td>
+                <td>{{ user.section }}</td>
+                <td>{{ user.points }}</td>
+                <td>
+                    <form method="POST" action="/delete_user/{{ user.username }}">
+                        <button type="submit">Delete User</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
         {% endif %}
 
         {% if can_create_tasks %}
@@ -887,20 +912,16 @@ def home():
     filter_origin = request.args.get("filter_origin", "").strip()
 
     if not current_user:
-        section_rows = build_section_totals()
-        if public_section != "All":
-            section_rows = [row for row in section_rows if row["section"] == public_section]
-
         return render_template_string(
             HTML,
             current_user=None,
             login_error=session.pop("login_error", None),
             public_section=public_section,
             public_section_options=["All"] + SECTIONS,
-            public_section_rows=section_rows,
+            public_section_rows=build_section_totals(public_section),
         )
 
-    leaderboard = build_leaderboard("All")
+    leaderboard = build_leaderboard()
     section_totals = build_section_totals()
 
     available_tasks = [
@@ -942,6 +963,7 @@ def home():
     can_delete_map = {task["id"]: can_delete_open_task(task, current_user) for task in available_tasks}
 
     resettable_users = [u for u in users if not u.get("is_master_admin")]
+    manageable_users = [u for u in users if not u.get("is_master_admin")]
 
     return render_template_string(
         HTML,
@@ -971,6 +993,7 @@ def home():
         can_approve_map=can_approve_map,
         can_delete_map=can_delete_map,
         resettable_users=resettable_users,
+        manageable_users=manageable_users,
         login_error=None,
         public_section=public_section,
         public_section_options=["All"] + SECTIONS,
@@ -1051,6 +1074,20 @@ def reset_password():
     target_user = get_user_by_username(target_username)
     if target_user and not target_user.get("is_master_admin") and new_password:
         target_user["password"] = new_password
+
+    return redirect(url_for("home"))
+
+
+@app.route("/delete_user/<username>", methods=["POST"])
+def delete_user(username):
+    current_user = get_current_user()
+    if not can_delete_users(current_user):
+        return redirect(url_for("home"))
+
+    for i, user in enumerate(users):
+        if user["username"] == username and not user.get("is_master_admin"):
+            users.pop(i)
+            break
 
     return redirect(url_for("home"))
 
