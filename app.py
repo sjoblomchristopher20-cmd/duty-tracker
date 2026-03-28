@@ -186,12 +186,14 @@ def complete_task(task_id):
     for task in tasks:
         if task["id"] == task_id and not task["completed"]:
             task["completed"] = True
-
             for user in users:
                 if user["name"] == task["assigned_to"]:
                     user["points"] += task["points"]
                     break
 
+            task["completed"] = True
+            completed_tasks.append(task)
+            tasks.pop(i)
             break
 
     return redirect(url_for("home"))
