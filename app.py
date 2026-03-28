@@ -34,11 +34,11 @@ users = [
     {
         "first_name": "Training",
         "last_name": "Room",
-        "display_name": "MSG TrainingRoom, T",
+        "display_name": "Training Room",
         "username": "trainingroom",
         "password": "ChangeMe123!",
-        "rank": "MSG",
-        "rank_level": RANKS["MSG"],
+        "rank": "",
+        "rank_level": 999,
         "section": "HQ",
         "points": 0,
         "is_master_admin": True,
@@ -142,10 +142,14 @@ def is_msg_plus(user):
 
 
 def can_create_tasks(user):
-    return is_sgt_plus(user)
+    return is_sgt_plus(user) or is_master_admin(user)
 
 
 def can_create_users(user):
+    return is_master_admin(user)
+
+
+def can_reset_passwords(user):
     return is_master_admin(user)
 
 
@@ -164,6 +168,8 @@ def can_force_delete(user):
 def can_see_task(task, user):
     if not user:
         return False
+    if is_master_admin(user):
+        return task["status"] == STATUS_AVAILABLE
     if task["status"] != STATUS_AVAILABLE:
         return False
     if task["claim_access"] == "All":
@@ -184,12 +190,14 @@ def can_submit_task(task, user):
 
 
 def can_approve_task(task, approver):
-    if not is_sgt_plus(approver):
+    if not can_create_tasks(approver):
         return False
     if task["status"] != STATUS_PENDING:
         return False
     if task["claimed_by"] == approver["display_name"]:
         return False
+    if is_master_admin(approver):
+        return True
 
     creator_level = task["created_by_rank"]
     claimant_level = task["claimed_by_rank"] or 0
@@ -205,13 +213,18 @@ def can_approve_task(task, approver):
 
 
 def build_leaderboard():
-    return sorted(users, key=lambda u: (-u["points"], -u["rank_level"], u["last_name"], u["first_name"]))
+    leaderboard_users = [u for u in users if not u.get("is_master_admin")]
+    return sorted(
+        leaderboard_users,
+        key=lambda u: (-u["points"], -u["rank_level"], u["last_name"], u["first_name"])
+    )
 
 
 def build_section_totals():
     totals = {section: 0 for section in SECTIONS}
     for user in users:
-        totals[user["section"]] += user["points"]
+        if not user.get("is_master_admin"):
+            totals[user["section"]] += user["points"]
 
     return sorted(
         [{"section": section, "points": points} for section, points in totals.items()],
@@ -313,11 +326,6 @@ HTML = """
 
         th {
             background: #f2f2f2;
-        }
-
-        .pending {
-            color: #8a3b00;
-            font-weight: bold;
         }
 
         .claimed {
@@ -433,10 +441,12 @@ HTML = """
                 <h1>Duty Tracker</h1>
                 <div>
                     Logged in as <strong>{{ current_user.display_name }}</strong>
+                    {% if not current_user.is_master_admin %}
+                    | {{ current_user.rank }}
                     | {{ current_user.section }}
                     | Points: <strong>{{ current_user.points }}</strong>
-                    {% if current_user.is_master_admin %}
-                    | <strong>Master Admin</strong>
+                    {% else %}
+                    | Master Admin
                     {% endif %}
                 </div>
             </div>
@@ -485,23 +495,36 @@ HTML = """
 
         {% if can_create_users %}
         <h2>Master Admin Panel</h2>
-        <form class="panel-form" method="POST" action="/add_user">
-            <h3>Create User</h3>
-            <input type="text" name="first_name" placeholder="First name" required>
-            <input type="text" name="last_name" placeholder="Last name" required>
-            <input type="password" name="password" placeholder="Password" required>
-            <select name="rank" required>
-                {% for rank_name in rank_names %}
-                    <option value="{{ rank_name }}">{{ rank_name }}</option>
-                {% endfor %}
-            </select>
-            <select name="section" required>
-                {% for section in sections %}
-                    <option value="{{ section }}">{{ section }}</option>
-                {% endfor %}
-            </select>
-            <button type="submit">Create User</button>
-        </form>
+        <div class="grid-2">
+            <form class="panel-form" method="POST" action="/add_user">
+                <h3>Create User</h3>
+                <input type="text" name="first_name" placeholder="First name" required>
+                <input type="text" name="last_name" placeholder="Last name" required>
+                <input type="password" name="password" placeholder="Password" required>
+                <select name="rank" required>
+                    {% for rank_name in rank_names %}
+                        <option value="{{ rank_name }}">{{ rank_name }}</option>
+                    {% endfor %}
+                </select>
+                <select name="section" required>
+                    {% for section in sections %}
+                        <option value="{{ section }}">{{ section }}</option>
+                    {% endfor %}
+                </select>
+                <button type="submit">Create User</button>
+            </form>
+
+            <form class="panel-form" method="POST" action="/reset_password">
+                <h3>Reset Password</h3>
+                <select name="target_username" required>
+                    {% for user in resettable_users %}
+                        <option value="{{ user.username }}">{{ user.display_name }} ({{ user.username }})</option>
+                    {% endfor %}
+                </select>
+                <input type="password" name="new_password" placeholder="New password" required>
+                <button type="submit">Reset Password</button>
+            </form>
+        </div>
         {% endif %}
 
         {% if can_create_tasks %}
@@ -823,12 +846,15 @@ def home():
     can_approve_map = {task["id"]: can_approve_task(task, current_user) for task in pending_tasks}
     can_delete_map = {task["id"]: can_delete_open_task(task, current_user) for task in available_tasks}
 
+    resettable_users = [u for u in users if not u.get("is_master_admin")]
+
     return render_template_string(
         HTML,
         current_user=current_user,
         can_create_users=can_create_users(current_user),
+        can_reset_passwords=can_reset_passwords(current_user),
         can_create_tasks=can_create_tasks(current_user),
-        can_see_archived=is_sgt_plus(current_user),
+        can_see_archived=is_sgt_plus(current_user) or is_master_admin(current_user),
         can_force_delete=can_force_delete(current_user),
         is_msg_plus=is_msg_plus(current_user),
         leaderboard=leaderboard,
@@ -849,6 +875,7 @@ def home():
         can_submit_map=can_submit_map,
         can_approve_map=can_approve_map,
         can_delete_map=can_delete_map,
+        resettable_users=resettable_users,
         login_error=None,
     )
 
@@ -909,6 +936,22 @@ def add_user():
         "points": 0,
         "is_master_admin": False,
     })
+
+    return redirect(url_for("home"))
+
+
+@app.route("/reset_password", methods=["POST"])
+def reset_password():
+    current_user = get_current_user()
+    if not can_reset_passwords(current_user):
+        return redirect(url_for("home"))
+
+    target_username = request.form["target_username"].strip()
+    new_password = request.form["new_password"]
+
+    target_user = get_user_by_username(target_username)
+    if target_user and not target_user.get("is_master_admin") and new_password:
+        target_user["password"] = new_password
 
     return redirect(url_for("home"))
 
@@ -1000,7 +1043,7 @@ def approve_task(task_id):
     for task in tasks:
         if task["id"] == task_id and can_approve_task(task, current_user):
             completer = get_user_by_display_name(task["claimed_by"])
-            if completer:
+            if completer and not completer.get("is_master_admin"):
                 completer["points"] += task["points"]
 
             task["status"] = STATUS_APPROVED
