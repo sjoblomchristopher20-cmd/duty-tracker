@@ -52,6 +52,9 @@ HTML = """
             border-collapse: collapse;
             width: 100%;
             margin-bottom: 25px;
+            h2 {
+                margin-bottom: 30px;
+            }
         }
 
         th, td {
@@ -73,6 +76,20 @@ HTML = """
 </head>
 <body>
     <h1>Duty Tracker</h1>
+
+    <h2>Leaderboard</h2>
+    <table>
+        <tr>
+            <th>Name</th>
+            <th>Points</th>
+        </tr>
+        {% for user in leaderboard %}
+        <tr>
+            <td>{{ user.name }}</td>
+            <td>{{ user.points }}</td>
+        </tr>
+        {% endfor %}
+    </table>
 
     <h2>Add User</h2>
     <form method="POST" action="/add_user">
@@ -112,20 +129,6 @@ HTML = """
                     <button type="submit">Complete</button>
                 </form>
             </td>
-        </tr>
-        {% endfor %}
-    </table>
-
-    <h2>Leaderboard</h2>
-    <table>
-        <tr>
-            <th>Name</th>
-            <th>Points</th>
-        </tr>
-        {% for user in leaderboard %}
-        <tr>
-            <td>{{ user.name }}</td>
-            <td>{{ user.points }}</td>
         </tr>
         {% endfor %}
     </table>
