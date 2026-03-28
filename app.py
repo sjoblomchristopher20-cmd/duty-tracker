@@ -1,7 +1,8 @@
 from flask import Flask, request, redirect, url_for, render_template_string, session
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
-app.secret_key = "change-this-to-a-secret-value"
+app.secret_key = "change-this-secret-before-real-use"
 
 RANKS = {
     "PVT": 1,
@@ -12,26 +13,48 @@ RANKS = {
     "SSG": 3,
     "SFC": 4,
     "1SG": 5,
-    "CW1": 6,
-    "CW2": 7,
-    "2LT": 8,
-    "1LT": 9,
-    "CPT": 10,
+    "MSG": 6,
+    "CW1": 7,
+    "CW2": 8,
+    "2LT": 9,
+    "1LT": 10,
+    "CPT": 11,
 }
 
 SECTIONS = ["Maintenance", "Distro", "HQ"]
 CLAIM_ACCESS_OPTIONS = ["All", "Maintenance", "Distro", "HQ"]
 
+STATUS_AVAILABLE = "available"
+STATUS_CLAIMED = "claimed"
+STATUS_PENDING = "pending_approval"
+STATUS_APPROVED = "approved"
+STATUS_ARCHIVED = "archived"
+
 users = [
     {
-        "name": "Christopher",
-        "username": "christopher",
+        "first_name": "Training",
+        "last_name": "Room",
+        "display_name": "MSG TrainingRoom, T",
+        "username": "trainingroom",
+        "password": "ChangeMe123!",
+        "rank": "MSG",
+        "rank_level": RANKS["MSG"],
+        "section": "HQ",
+        "points": 0,
+        "is_master_admin": True,
+    },
+    {
+        "first_name": "Christopher",
+        "last_name": "Sjoblom",
+        "display_name": "SSG Sjoblom, C",
+        "username": "sjoblomc",
         "password": "Temp123!",
         "rank": "SSG",
         "rank_level": RANKS["SSG"],
         "section": "Distro",
         "points": 0,
-    }
+        "is_master_admin": False,
+    },
 ]
 
 tasks = [
@@ -41,21 +64,60 @@ tasks = [
         "points": 10,
         "section_origin": "HQ",
         "claim_access": "All",
-        "created_by": "Christopher",
+        "created_by": "SSG Sjoblom, C",
         "created_by_rank": RANKS["SSG"],
+        "created_by_section": "Distro",
         "claimed_by": None,
         "claimed_by_rank": None,
         "claimed_by_section": None,
-        "status": "available",
+        "status": STATUS_AVAILABLE,
         "rejection_note": "",
-        "last_action": "",
+        "last_action": "Created",
+        "approved_date": None,
+        "archived_date": None,
     }
 ]
 
 
+def now_utc():
+    return datetime.utcnow()
+
+
+def format_display_name(first_name, last_name, rank):
+    first_initial = first_name[0].upper() if first_name else ""
+    return f"{rank} {last_name}, {first_initial}"
+
+
+def parse_iso_date(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def auto_archive_old_tasks():
+    cutoff = now_utc() - timedelta(days=30)
+    for task in tasks:
+        if task["status"] == STATUS_APPROVED and task["approved_date"]:
+            approved_dt = parse_iso_date(task["approved_date"])
+            if approved_dt and approved_dt <= cutoff:
+                task["status"] = STATUS_ARCHIVED
+                task["archived_date"] = now_utc().isoformat()
+                task["last_action"] = "Auto-archived after 30 days"
+
+
 def get_user_by_username(username):
     for user in users:
-        if user["username"] == username:
+        if user["username"].lower() == username.lower():
+            return user
+    return None
+
+
+def get_user_by_display_name(display_name):
+    for user in users:
+        if user["display_name"] == display_name:
             return user
     return None
 
@@ -67,60 +129,109 @@ def get_current_user():
     return get_user_by_username(username)
 
 
-def is_admin(user):
-    return user and user["rank_level"] >= 2  # SGT+
+def is_master_admin(user):
+    return bool(user and user.get("is_master_admin"))
 
 
-def can_claim(task, user):
+def is_sgt_plus(user):
+    return bool(user and user["rank_level"] >= 2)
+
+
+def is_msg_plus(user):
+    return bool(user and user["rank_level"] >= 6)
+
+
+def can_create_tasks(user):
+    return is_sgt_plus(user)
+
+
+def can_create_users(user):
+    return is_master_admin(user)
+
+
+def can_delete_open_task(task, user):
+    return bool(
+        user
+        and task["status"] == STATUS_AVAILABLE
+        and task["created_by"] == user["display_name"]
+    )
+
+
+def can_force_delete(user):
+    return is_master_admin(user)
+
+
+def can_see_task(task, user):
     if not user:
         return False
-    if task["status"] != "available":
+    if task["status"] != STATUS_AVAILABLE:
         return False
     if task["claim_access"] == "All":
         return True
     return task["claim_access"] == user["section"]
 
 
-def can_submit(task, user):
-    if not user:
-        return False
-    return task["status"] == "claimed" and task["claimed_by"] == user["name"]
+def can_claim_task(task, user):
+    return can_see_task(task, user)
 
 
-def can_approve(task, approver):
-    if not approver or approver["rank_level"] < 2:
+def can_submit_task(task, user):
+    return bool(
+        user
+        and task["status"] == STATUS_CLAIMED
+        and task["claimed_by"] == user["display_name"]
+    )
+
+
+def can_approve_task(task, approver):
+    if not is_sgt_plus(approver):
         return False
-    if task["status"] != "pending_approval":
+    if task["status"] != STATUS_PENDING:
         return False
-    if task["claimed_by"] == approver["name"]:
+    if task["claimed_by"] == approver["display_name"]:
         return False
 
     creator_level = task["created_by_rank"]
     claimant_level = task["claimed_by_rank"] or 0
     approver_level = approver["rank_level"]
 
-    # Special rule:
-    # If SPC and below completed it, any SGT+ can approve it.
-    if claimant_level == 1 and approver_level >= 2:
+    # Special delegated rule:
+    # If SSG+ created the task and SPC/lower completed it, SGT can approve.
+    if creator_level >= 3 and claimant_level == 1 and approver_level >= 2:
         return True
 
-    # Otherwise, approver must outrank the creator.
+    # Normal rule: approver must outrank creator.
     return approver_level > creator_level
 
 
 def build_leaderboard():
-    return sorted(users, key=lambda x: x["points"], reverse=True)
+    return sorted(users, key=lambda u: (-u["points"], -u["rank_level"], u["last_name"], u["first_name"]))
 
 
 def build_section_totals():
     totals = {section: 0 for section in SECTIONS}
     for user in users:
         totals[user["section"]] += user["points"]
+
     return sorted(
-        [{"section": k, "points": v} for k, v in totals.items()],
-        key=lambda x: x["points"],
-        reverse=True,
+        [{"section": section, "points": points} for section, points in totals.items()],
+        key=lambda row: (-row["points"], row["section"])
     )
+
+
+def filter_history(history_tasks, name_filter="", completed_section_filter="", origin_filter=""):
+    filtered = history_tasks
+
+    if name_filter:
+        filtered = [t for t in filtered if t["claimed_by"] == name_filter]
+
+    if completed_section_filter:
+        filtered = [t for t in filtered if t["claimed_by_section"] == completed_section_filter]
+
+    if origin_filter:
+        filtered = [t for t in filtered if t["section_origin"] == origin_filter]
+
+    return filtered
 
 
 HTML = """
@@ -131,7 +242,7 @@ HTML = """
     <style>
         body {
             font-family: Arial, sans-serif;
-            margin: 30px;
+            margin: 24px;
             background: #ffffff;
             color: #111111;
         }
@@ -148,17 +259,31 @@ HTML = """
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
-            padding-bottom: 10px;
+            gap: 16px;
+            padding-bottom: 12px;
             border-bottom: 2px solid #ddd;
+            margin-bottom: 20px;
         }
 
-        .login-box, .panel-form {
+        .topbar-right form {
+            margin: 0;
+            padding: 0;
+            border: none;
+            background: transparent;
+            width: auto;
+        }
+
+        .login-box, .panel-form, .filter-form {
             margin-bottom: 20px;
             padding: 12px;
             border: 1px solid #ccc;
-            width: 380px;
+            width: 400px;
             background: #f9f9f9;
+        }
+
+        .filter-form {
+            width: 100%;
+            max-width: 900px;
         }
 
         input, select, textarea, button {
@@ -191,12 +316,12 @@ HTML = """
         }
 
         .pending {
-            color: darkred;
+            color: #8a3b00;
             font-weight: bold;
         }
 
         .claimed {
-            color: #a56700;
+            color: #8a3b00;
             font-weight: bold;
         }
 
@@ -205,8 +330,13 @@ HTML = """
             font-weight: bold;
         }
 
-        .done {
+        .approved {
             color: green;
+            font-weight: bold;
+        }
+
+        .archived {
+            color: #666;
             font-weight: bold;
         }
 
@@ -225,7 +355,7 @@ HTML = """
 
         .grid-2 {
             display: grid;
-            grid-template-columns: repeat(2, minmax(280px, 1fr));
+            grid-template-columns: repeat(2, minmax(320px, 1fr));
             gap: 20px;
         }
 
@@ -252,6 +382,38 @@ HTML = """
             width: 100%;
             margin-bottom: 6px;
         }
+
+        .button-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .button-row button,
+        .button-row a {
+            width: auto;
+        }
+
+        .tab-links {
+            margin: 8px 0 18px 0;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .tab-links a {
+            text-decoration: none;
+            padding: 8px 12px;
+            border: 1px solid #ccc;
+            background: #f7f7f7;
+            color: #111;
+        }
+
+        .tab-links a.active {
+            background: #e8f0fe;
+            border-color: #0b57d0;
+        }
     </style>
 </head>
 <body>
@@ -270,13 +432,15 @@ HTML = """
             <div>
                 <h1>Duty Tracker</h1>
                 <div>
-                    Logged in as <strong>{{ current_user.name }}</strong>
-                    | {{ current_user.rank }}
+                    Logged in as <strong>{{ current_user.display_name }}</strong>
                     | {{ current_user.section }}
                     | Points: <strong>{{ current_user.points }}</strong>
+                    {% if current_user.is_master_admin %}
+                    | <strong>Master Admin</strong>
+                    {% endif %}
                 </div>
             </div>
-            <div>
+            <div class="topbar-right">
                 <form method="POST" action="/logout">
                     <button type="submit">Logout</button>
                 </form>
@@ -289,14 +453,12 @@ HTML = """
                 <table>
                     <tr>
                         <th>Name</th>
-                        <th>Rank</th>
                         <th>Section</th>
                         <th>Points</th>
                     </tr>
                     {% for user in leaderboard %}
                     <tr>
-                        <td>{{ user.name }}</td>
-                        <td>{{ user.rank }}</td>
+                        <td>{{ user.display_name }}</td>
                         <td>{{ user.section }}</td>
                         <td>{{ user.points }}</td>
                     </tr>
@@ -321,44 +483,53 @@ HTML = """
             </div>
         </div>
 
-        {% if is_admin %}
-        <h2>Admin Panel</h2>
-        <div class="grid-2">
-            <form class="panel-form" method="POST" action="/add_user">
-                <h3>Create User</h3>
-                <input type="text" name="name" placeholder="Full name" required>
-                <input type="text" name="username" placeholder="Username" required>
-                <input type="password" name="password" placeholder="Password" required>
-                <select name="rank" required>
-                    {% for rank_name in rank_names %}
-                        <option value="{{ rank_name }}">{{ rank_name }}</option>
-                    {% endfor %}
-                </select>
-                <select name="section" required>
-                    {% for section in sections %}
-                        <option value="{{ section }}">{{ section }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit">Create User</button>
-            </form>
+        {% if can_create_users %}
+        <h2>Master Admin Panel</h2>
+        <form class="panel-form" method="POST" action="/add_user">
+            <h3>Create User</h3>
+            <input type="text" name="first_name" placeholder="First name" required>
+            <input type="text" name="last_name" placeholder="Last name" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <select name="rank" required>
+                {% for rank_name in rank_names %}
+                    <option value="{{ rank_name }}">{{ rank_name }}</option>
+                {% endfor %}
+            </select>
+            <select name="section" required>
+                {% for section in sections %}
+                    <option value="{{ section }}">{{ section }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit">Create User</button>
+        </form>
+        {% endif %}
 
-            <form class="panel-form" method="POST" action="/add_task">
-                <h3>Create Task</h3>
-                <input type="text" name="title" placeholder="Task title" required>
-                <input type="number" name="points" placeholder="Points" min="1" required>
-                <select name="section_origin" required>
-                    {% for section in sections %}
-                        <option value="{{ section }}">{{ section }}</option>
-                    {% endfor %}
-                </select>
-                <select name="claim_access" required>
-                    {% for option in claim_access_options %}
-                        <option value="{{ option }}">{{ option }}</option>
-                    {% endfor %}
-                </select>
-                <button type="submit">Create Task</button>
-            </form>
-        </div>
+        {% if can_create_tasks %}
+        <h2>Task Controls</h2>
+        <form class="panel-form" method="POST" action="/add_task">
+            <h3>Create Task</h3>
+            <input type="text" name="title" placeholder="Task title" required>
+            <input type="number" name="points" placeholder="Points" min="1" required>
+
+            {% if is_msg_plus %}
+            <select name="section_origin" required>
+                {% for section in sections %}
+                    <option value="{{ section }}">{{ section }}</option>
+                {% endfor %}
+            </select>
+            <select name="claim_access" required>
+                {% for option in claim_access_options %}
+                    <option value="{{ option }}">{{ option }}</option>
+                {% endfor %}
+            </select>
+            {% else %}
+            <input type="hidden" name="section_origin" value="{{ current_user.section }}">
+            <input type="hidden" name="claim_access" value="All">
+            <p class="note">Task origin defaults to your section. Scope defaults to All.</p>
+            {% endif %}
+
+            <button type="submit">Create Task</button>
+        </form>
         {% endif %}
 
         <h2>Available Tasks</h2>
@@ -380,13 +551,19 @@ HTML = """
                 <td><span class="pill">{{ task.claim_access }}</span></td>
                 <td>{{ task.created_by }}</td>
                 <td>
-                    {% if can_claim_map[task.id] %}
-                    <form method="POST" action="/claim_task/{{ task.id }}">
-                        <button type="submit">Claim</button>
-                    </form>
-                    {% else %}
-                    <span class="note">Not eligible</span>
-                    {% endif %}
+                    <div class="button-row">
+                        {% if can_claim_map[task.id] %}
+                        <form method="POST" action="/claim_task/{{ task.id }}">
+                            <button type="submit">Claim</button>
+                        </form>
+                        {% endif %}
+
+                        {% if can_delete_map[task.id] %}
+                        <form method="POST" action="/delete_task/{{ task.id }}">
+                            <button type="submit">Delete</button>
+                        </form>
+                        {% endif %}
+                    </div>
                 </td>
             </tr>
             {% endfor %}
@@ -420,7 +597,7 @@ HTML = """
                 </td>
                 <td>{{ task.rejection_note or "-" }}</td>
                 <td>
-                    {% if task.status == "claimed" %}
+                    {% if can_submit_map[task.id] %}
                     <form method="POST" action="/submit_task/{{ task.id }}">
                         <button type="submit">Mark Done</button>
                     </form>
@@ -435,7 +612,7 @@ HTML = """
         <p class="empty-note">You have no claimed tasks right now.</p>
         {% endif %}
 
-        {% if is_admin %}
+        {% if can_create_tasks %}
         <h2>Approval Queue</h2>
         {% if pending_tasks %}
         <table>
@@ -445,7 +622,7 @@ HTML = """
                 <th>Created By</th>
                 <th>Claimed By</th>
                 <th>Claimed By Section</th>
-                <th>Approval</th>
+                <th>Approve</th>
                 <th>Reject</th>
             </tr>
             {% for task in pending_tasks %}
@@ -486,8 +663,55 @@ HTML = """
         {% endif %}
         {% endif %}
 
-        <h2>Completed History</h2>
-        {% if completed_tasks %}
+        <h2>History</h2>
+        <div class="tab-links">
+            <a href="/?history_tab=approved" class="{% if history_tab == 'approved' %}active{% endif %}">Approved</a>
+            {% if can_see_archived %}
+            <a href="/?history_tab=archived" class="{% if history_tab == 'archived' %}active{% endif %}">Archived</a>
+            {% endif %}
+        </div>
+
+        {% if can_create_tasks %}
+        <form class="filter-form" method="GET" action="/">
+            <input type="hidden" name="history_tab" value="{{ history_tab }}">
+            <div class="grid-2">
+                <div>
+                    <label>Completed By Name</label>
+                    <select name="filter_name">
+                        <option value="">All</option>
+                        {% for name in completed_names %}
+                        <option value="{{ name }}" {% if filter_name == name %}selected{% endif %}>{{ name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label>Completed By Section</label>
+                    <select name="filter_completed_section">
+                        <option value="">All</option>
+                        {% for section in sections %}
+                        <option value="{{ section }}" {% if filter_completed_section == section %}selected{% endif %}>{{ section }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label>Origin Section</label>
+                    <select name="filter_origin">
+                        <option value="">All</option>
+                        {% for section in sections %}
+                        <option value="{{ section }}" {% if filter_origin == section %}selected{% endif %}>{{ section }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+            </div>
+            <div class="button-row">
+                <button type="submit">Apply Filters</button>
+                <a href="/?history_tab={{ history_tab }}">Clear Filters</a>
+            </div>
+        </form>
+        <p class="note">Showing {{ history_rows|length }} task(s).</p>
+        {% endif %}
+
+        {% if history_rows %}
         <table>
             <tr>
                 <th>Task</th>
@@ -496,20 +720,44 @@ HTML = """
                 <th>Completed By</th>
                 <th>Completed By Section</th>
                 <th>Status</th>
+                <th>Approved Date</th>
+                {% if history_tab == "archived" %}
+                <th>Archived Date</th>
+                {% endif %}
+                {% if can_force_delete %}
+                <th>Force Delete</th>
+                {% endif %}
             </tr>
-            {% for task in completed_tasks %}
+            {% for task in history_rows %}
             <tr>
                 <td>{{ task.title }}</td>
                 <td>{{ task.points }}</td>
                 <td>{{ task.section_origin }}</td>
                 <td>{{ task.claimed_by }}</td>
                 <td>{{ task.claimed_by_section }}</td>
-                <td><span class="done">Completed</span></td>
+                <td>
+                    {% if task.status == "approved" %}
+                    <span class="approved">Approved</span>
+                    {% elif task.status == "archived" %}
+                    <span class="archived">Archived</span>
+                    {% endif %}
+                </td>
+                <td>{{ task.approved_date or "-" }}</td>
+                {% if history_tab == "archived" %}
+                <td>{{ task.archived_date or "-" }}</td>
+                {% endif %}
+                {% if can_force_delete %}
+                <td>
+                    <form method="POST" action="/force_delete_task/{{ task.id }}">
+                        <button type="submit">Force Delete</button>
+                    </form>
+                </td>
+                {% endif %}
             </tr>
             {% endfor %}
         </table>
         {% else %}
-        <p class="empty-note">No completed tasks yet.</p>
+        <p class="empty-note">No tasks found for this history view.</p>
         {% endif %}
     {% endif %}
 </body>
@@ -519,8 +767,9 @@ HTML = """
 
 @app.route("/", methods=["GET"])
 def home():
-    current_user = get_current_user()
+    auto_archive_old_tasks()
 
+    current_user = get_current_user()
     if not current_user:
         return render_template_string(
             HTML,
@@ -528,24 +777,60 @@ def home():
             login_error=session.pop("login_error", None),
         )
 
+    history_tab = request.args.get("history_tab", "approved")
+    if history_tab not in ["approved", "archived"]:
+        history_tab = "approved"
+
+    filter_name = request.args.get("filter_name", "").strip()
+    filter_completed_section = request.args.get("filter_completed_section", "").strip()
+    filter_origin = request.args.get("filter_origin", "").strip()
+
     leaderboard = build_leaderboard()
     section_totals = build_section_totals()
 
-    available_tasks = [t for t in tasks if t["status"] == "available"]
-    my_tasks = [
-        t for t in tasks
-        if t["claimed_by"] == current_user["name"] and t["status"] in ["claimed", "pending_approval"]
+    available_tasks = [
+        task for task in tasks
+        if task["status"] == STATUS_AVAILABLE and can_see_task(task, current_user)
     ]
-    pending_tasks = [t for t in tasks if t["status"] == "pending_approval"]
-    completed_history = [t for t in tasks if t["status"] == "completed"]
 
-    can_claim_map = {task["id"]: can_claim(task, current_user) for task in available_tasks}
-    can_approve_map = {task["id"]: can_approve(task, current_user) for task in pending_tasks}
+    my_tasks = [
+        task for task in tasks
+        if task["claimed_by"] == current_user["display_name"]
+        and task["status"] in [STATUS_CLAIMED, STATUS_PENDING]
+    ]
+
+    pending_tasks = [task for task in tasks if task["status"] == STATUS_PENDING]
+
+    approved_history = [task for task in tasks if task["status"] == STATUS_APPROVED]
+    archived_history = [task for task in tasks if task["status"] == STATUS_ARCHIVED]
+
+    base_history = approved_history if history_tab == "approved" else archived_history
+    history_rows = filter_history(
+        base_history,
+        name_filter=filter_name,
+        completed_section_filter=filter_completed_section,
+        origin_filter=filter_origin,
+    )
+
+    completed_names = sorted({
+        task["claimed_by"]
+        for task in approved_history + archived_history
+        if task["claimed_by"]
+    })
+
+    can_claim_map = {task["id"]: can_claim_task(task, current_user) for task in available_tasks}
+    can_submit_map = {task["id"]: can_submit_task(task, current_user) for task in my_tasks}
+    can_approve_map = {task["id"]: can_approve_task(task, current_user) for task in pending_tasks}
+    can_delete_map = {task["id"]: can_delete_open_task(task, current_user) for task in available_tasks}
 
     return render_template_string(
         HTML,
         current_user=current_user,
-        is_admin=is_admin(current_user),
+        can_create_users=can_create_users(current_user),
+        can_create_tasks=can_create_tasks(current_user),
+        can_see_archived=is_sgt_plus(current_user),
+        can_force_delete=can_force_delete(current_user),
+        is_msg_plus=is_msg_plus(current_user),
         leaderboard=leaderboard,
         section_totals=section_totals,
         sections=SECTIONS,
@@ -554,9 +839,16 @@ def home():
         available_tasks=available_tasks,
         my_tasks=my_tasks,
         pending_tasks=pending_tasks,
-        completed_tasks=completed_history,
+        history_tab=history_tab,
+        history_rows=history_rows,
+        completed_names=completed_names,
+        filter_name=filter_name,
+        filter_completed_section=filter_completed_section,
+        filter_origin=filter_origin,
         can_claim_map=can_claim_map,
+        can_submit_map=can_submit_map,
         can_approve_map=can_approve_map,
+        can_delete_map=can_delete_map,
         login_error=None,
     )
 
@@ -584,31 +876,39 @@ def logout():
 @app.route("/add_user", methods=["POST"])
 def add_user():
     current_user = get_current_user()
-    if not is_admin(current_user):
+    if not can_create_users(current_user):
         return redirect(url_for("home"))
 
-    name = request.form["name"].strip()
-    username = request.form["username"].strip()
+    first_name = request.form["first_name"].strip()
+    last_name = request.form["last_name"].strip()
     password = request.form["password"]
     rank = request.form["rank"]
     section = request.form["section"]
 
-    if (
-        name
-        and username
-        and rank in RANKS
-        and section in SECTIONS
-        and not any(u["username"].lower() == username.lower() for u in users)
-    ):
-        users.append({
-            "name": name,
-            "username": username,
-            "password": password,
-            "rank": rank,
-            "rank_level": RANKS[rank],
-            "section": section,
-            "points": 0,
-        })
+    if not first_name or not last_name or rank not in RANKS or section not in SECTIONS:
+        return redirect(url_for("home"))
+
+    username = f"{last_name.lower()}{first_name[0].lower()}"
+
+    if any(user["username"].lower() == username.lower() for user in users):
+        suffix = 2
+        base = username
+        while any(user["username"].lower() == f"{base}{suffix}".lower() for user in users):
+            suffix += 1
+        username = f"{base}{suffix}"
+
+    users.append({
+        "first_name": first_name,
+        "last_name": last_name,
+        "display_name": format_display_name(first_name, last_name, rank),
+        "username": username,
+        "password": password,
+        "rank": rank,
+        "rank_level": RANKS[rank],
+        "section": section,
+        "points": 0,
+        "is_master_admin": False,
+    })
 
     return redirect(url_for("home"))
 
@@ -616,7 +916,7 @@ def add_user():
 @app.route("/add_task", methods=["POST"])
 def add_task():
     current_user = get_current_user()
-    if not is_admin(current_user):
+    if not can_create_tasks(current_user):
         return redirect(url_for("home"))
 
     title = request.form["title"].strip()
@@ -624,7 +924,13 @@ def add_task():
     section_origin = request.form["section_origin"]
     claim_access = request.form["claim_access"]
 
-    if not title or section_origin not in SECTIONS or claim_access not in CLAIM_ACCESS_OPTIONS:
+    if not title or points < 1:
+        return redirect(url_for("home"))
+
+    if section_origin not in SECTIONS:
+        return redirect(url_for("home"))
+
+    if claim_access not in CLAIM_ACCESS_OPTIONS:
         return redirect(url_for("home"))
 
     new_id = max((task["id"] for task in tasks), default=0) + 1
@@ -635,14 +941,17 @@ def add_task():
         "points": points,
         "section_origin": section_origin,
         "claim_access": claim_access,
-        "created_by": current_user["name"],
+        "created_by": current_user["display_name"],
         "created_by_rank": current_user["rank_level"],
+        "created_by_section": current_user["section"],
         "claimed_by": None,
         "claimed_by_rank": None,
         "claimed_by_section": None,
-        "status": "available",
+        "status": STATUS_AVAILABLE,
         "rejection_note": "",
         "last_action": "Created",
+        "approved_date": None,
+        "archived_date": None,
     })
 
     return redirect(url_for("home"))
@@ -655,13 +964,13 @@ def claim_task(task_id):
         return redirect(url_for("home"))
 
     for task in tasks:
-        if task["id"] == task_id and can_claim(task, current_user):
-            task["claimed_by"] = current_user["name"]
+        if task["id"] == task_id and can_claim_task(task, current_user):
+            task["claimed_by"] = current_user["display_name"]
             task["claimed_by_rank"] = current_user["rank_level"]
             task["claimed_by_section"] = current_user["section"]
-            task["status"] = "claimed"
+            task["status"] = STATUS_CLAIMED
             task["rejection_note"] = ""
-            task["last_action"] = "Claimed"
+            task["last_action"] = f"Claimed by {current_user['display_name']}"
             break
 
     return redirect(url_for("home"))
@@ -674,9 +983,9 @@ def submit_task(task_id):
         return redirect(url_for("home"))
 
     for task in tasks:
-        if task["id"] == task_id and can_submit(task, current_user):
-            task["status"] = "pending_approval"
-            task["last_action"] = "Submitted for approval"
+        if task["id"] == task_id and can_submit_task(task, current_user):
+            task["status"] = STATUS_PENDING
+            task["last_action"] = f"Submitted by {current_user['display_name']}"
             break
 
     return redirect(url_for("home"))
@@ -685,19 +994,19 @@ def submit_task(task_id):
 @app.route("/approve_task/<int:task_id>", methods=["POST"])
 def approve_task(task_id):
     current_user = get_current_user()
-    if not is_admin(current_user):
+    if not can_create_tasks(current_user):
         return redirect(url_for("home"))
 
     for task in tasks:
-        if task["id"] == task_id and can_approve(task, current_user):
-            for user in users:
-                if user["name"] == task["claimed_by"]:
-                    user["points"] += task["points"]
-                    break
+        if task["id"] == task_id and can_approve_task(task, current_user):
+            completer = get_user_by_display_name(task["claimed_by"])
+            if completer:
+                completer["points"] += task["points"]
 
-            task["status"] = "completed"
+            task["status"] = STATUS_APPROVED
             task["rejection_note"] = ""
-            task["last_action"] = f"Approved by {current_user['name']}"
+            task["approved_date"] = now_utc().isoformat()
+            task["last_action"] = f"Approved by {current_user['display_name']}"
             break
 
     return redirect(url_for("home"))
@@ -706,25 +1015,53 @@ def approve_task(task_id):
 @app.route("/reject_task/<int:task_id>", methods=["POST"])
 def reject_task(task_id):
     current_user = get_current_user()
-    if not is_admin(current_user):
+    if not can_create_tasks(current_user):
         return redirect(url_for("home"))
 
     rejection_action = request.form["rejection_action"]
     rejection_note = request.form.get("rejection_note", "").strip()
 
     for task in tasks:
-        if task["id"] == task_id and can_approve(task, current_user):
+        if task["id"] == task_id and can_approve_task(task, current_user):
             task["rejection_note"] = rejection_note
 
             if rejection_action == "return":
-                task["status"] = "claimed"
-                task["last_action"] = f"Returned to claimant by {current_user['name']}"
+                task["status"] = STATUS_CLAIMED
+                task["last_action"] = f"Returned to claimant by {current_user['display_name']}"
             elif rejection_action == "reopen":
-                task["status"] = "available"
+                task["status"] = STATUS_AVAILABLE
                 task["claimed_by"] = None
                 task["claimed_by_rank"] = None
                 task["claimed_by_section"] = None
-                task["last_action"] = f"Reopened by {current_user['name']}"
+                task["last_action"] = f"Rejected and reopened by {current_user['display_name']}"
+            break
+
+    return redirect(url_for("home"))
+
+
+@app.route("/delete_task/<int:task_id>", methods=["POST"])
+def delete_task(task_id):
+    current_user = get_current_user()
+    if not current_user:
+        return redirect(url_for("home"))
+
+    for i, task in enumerate(tasks):
+        if task["id"] == task_id and can_delete_open_task(task, current_user):
+            tasks.pop(i)
+            break
+
+    return redirect(url_for("home"))
+
+
+@app.route("/force_delete_task/<int:task_id>", methods=["POST"])
+def force_delete_task(task_id):
+    current_user = get_current_user()
+    if not can_force_delete(current_user):
+        return redirect(url_for("home"))
+
+    for i, task in enumerate(tasks):
+        if task["id"] == task_id:
+            tasks.pop(i)
             break
 
     return redirect(url_for("home"))
