@@ -496,7 +496,7 @@ HTML = """
             </div>
         </div>
 
-        {% if True %}
+        {% if current_user.is_master_admin %}
         <h2>Master Admin Panel</h2>
         <div class="grid-2">
             <form class="panel-form" method="POST" action="/add_user">
