@@ -374,10 +374,18 @@ HTML = """
                 <td>{{ task.due_date or "" }}</td>
                 <td>
                     {% if can_claim_map[task.id] %}
-                    <form class="inline-form" method="POST" action="/claim_task/{{ task.id }}">
+                    <form class="inline-form" method="POST" action="/claim_task/{{ task.id }}" style="display:inline-block;">
                         <button type="submit">Claim</button>
                     </form>
-                    {% else %}
+                    {% endif %}
+
+                    {% if can_delete_map[task.id] %}
+                    <form class="inline-form" method="POST" action="/delete_task/{{ task.id }}" style="display:inline-block;">
+                        <button type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+
+                    {% if not can_claim_map[task.id] and not can_delete_map[task.id] %}
                     <span class="muted">Unavailable</span>
                     {% endif %}
                 </td>
@@ -408,10 +416,18 @@ HTML = """
                 <td>{{ task.rejection_note or "" }}</td>
                 <td>
                     {% if can_submit_map[task.id] %}
-                    <form class="inline-form" method="POST" action="/submit_task/{{ task.id }}">
+                    <form class="inline-form" method="POST" action="/submit_task/{{ task.id }}" style="display:inline-block;">
                         <button type="submit">Submit</button>
                     </form>
-                    {% else %}
+                    {% endif %}
+
+                    {% if can_delete_map[task.id] %}
+                    <form class="inline-form" method="POST" action="/delete_task/{{ task.id }}" style="display:inline-block;">
+                        <button type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+
+                    {% if not can_submit_map[task.id] and not can_delete_map[task.id] %}
                     <span class="muted">Waiting</span>
                     {% endif %}
                 </td>
@@ -452,7 +468,15 @@ HTML = """
                         <input type="text" name="rejection_note" placeholder="Reason" required>
                         <button type="submit">Reject</button>
                     </form>
-                    {% else %}
+                    {% endif %}
+
+                    {% if can_delete_map[task.id] %}
+                    <form class="inline-form" method="POST" action="/delete_task/{{ task.id }}" style="display:inline-block;">
+                        <button type="submit">Delete</button>
+                    </form>
+                    {% endif %}
+
+                    {% if not can_approve_map[task.id] and not can_delete_map[task.id] %}
                     <span class="muted">No access</span>
                     {% endif %}
                 </td>
@@ -780,9 +804,11 @@ def home():
     can_claim_map = {task["id"]: can_claim_task(task, current_user) for task in available_tasks}
     can_submit_map = {task["id"]: can_submit_task(task, current_user) for task in my_tasks}
     can_approve_map = {task["id"]: can_approve_task(task, current_user) for task in pending_tasks}
+
+    all_visible_tasks_for_delete = available_tasks + my_tasks + pending_tasks + history_rows
     can_delete_map = {
         task["id"]: can_delete_open_task(task, current_user) or is_master_admin(current_user)
-        for task in history_rows
+        for task in all_visible_tasks_for_delete
     }
 
     resettable_users = [u for u in all_users if not u.get("is_master_admin")]
