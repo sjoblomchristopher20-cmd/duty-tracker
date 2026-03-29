@@ -1,5 +1,4 @@
 import os
-from datetime import datetime, timezone
 
 from flask import Flask, request, redirect, url_for, session, render_template_string
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -145,14 +144,6 @@ HTML = """
         }
         .small {
             font-size: 12px;
-        }
-        .badge {
-            display: inline-block;
-            padding: 2px 8px;
-            border: 1px solid #ccc;
-            border-radius: 12px;
-            font-size: 12px;
-            background: #fff;
         }
     </style>
 </head>
@@ -349,24 +340,10 @@ HTML = """
         <input type="text" name="title" placeholder="Task title" required>
         <input type="number" name="points" placeholder="Points" min="1" required>
 
-        <label>Origin Section</label>
-        <select name="section_origin" required>
-            {% for section in sections %}
-                <option value="{{ section }}">{{ section }}</option>
-            {% endfor %}
-        </select>
-
         <label>Claim Access</label>
         <select name="claim_access" required>
             {% for option in claim_access_options %}
                 <option value="{{ option }}">{{ option }}</option>
-            {% endfor %}
-        </select>
-
-        <label>Minimum Rank To Claim</label>
-        <select name="min_rank_level" required>
-            {% for value, label in min_rank_choices %}
-                <option value="{{ value }}">{{ label }}</option>
             {% endfor %}
         </select>
 
@@ -385,7 +362,6 @@ HTML = """
                 <th>Points</th>
                 <th>Origin</th>
                 <th>Access</th>
-                <th>Min Rank</th>
                 <th>Due</th>
                 <th>Action</th>
             </tr>
@@ -395,7 +371,6 @@ HTML = """
                 <td>{{ task.points }}</td>
                 <td>{{ task.section_origin }}</td>
                 <td>{{ task.claim_access }}</td>
-                <td>{{ rank_name_from_level(task.min_rank_level) }}</td>
                 <td>{{ task.due_date or "" }}</td>
                 <td>
                     {% if can_claim_map[task.id] %}
@@ -624,10 +599,6 @@ def is_sgt_plus(user):
     return bool(user and int(user.get("rank_level", 0)) >= 2)
 
 
-def is_msg_plus(user):
-    return bool(user and int(user.get("rank_level", 0)) >= 5)
-
-
 def can_create_tasks(user):
     return is_master_admin(user) or is_sgt_plus(user)
 
@@ -644,9 +615,6 @@ def can_claim_task(task, user):
         return False
 
     if task.get("claim_access") != "All" and user.get("section") != task.get("claim_access"):
-        return False
-
-    if int(user.get("rank_level", 0) or 0) < int(task.get("min_rank_level", 1) or 1):
         return False
 
     return True
@@ -820,16 +788,6 @@ def home():
     resettable_users = [u for u in all_users if not u.get("is_master_admin")]
     manageable_users = [u for u in all_users if not u.get("is_master_admin")]
 
-    rank_choices = sorted(RANKS.items(), key=lambda x: (x[1], x[0]))
-    seen_levels = set()
-    min_rank_choices = []
-    for name, level in rank_choices:
-        if level == 999:
-            continue
-        if level not in seen_levels:
-            min_rank_choices.append((level, f"{name} ({level})"))
-            seen_levels.add(level)
-
     return render_template_string(
         HTML,
         current_user=current_user,
@@ -856,7 +814,6 @@ def home():
         can_delete_map=can_delete_map,
         resettable_users=resettable_users,
         manageable_users=manageable_users,
-        min_rank_choices=min_rank_choices,
         message=pop_message(),
         error=pop_error(),
         login_error=None,
@@ -1014,14 +971,14 @@ def add_task_route():
     title = request.form["title"].strip()
     try:
         points = int(request.form["points"])
-        min_rank_level = int(request.form["min_rank_level"])
     except (KeyError, ValueError, TypeError):
         set_error("Invalid task values.")
         return redirect(url_for("home"))
 
-    section_origin = request.form["section_origin"]
     claim_access = request.form["claim_access"]
     due_date = request.form.get("due_date", "").strip() or None
+    section_origin = current_user.get("section", "")
+    min_rank_level = 1
 
     if not title or points < 1 or section_origin not in SECTIONS or claim_access not in CLAIM_ACCESS_OPTIONS:
         set_error("Invalid task data.")
@@ -1115,13 +1072,14 @@ def approve_task_route(task_id):
     claimant = get_user_by_username(claimed_by_username) if claimed_by_username else None
     if claimant:
         update_user(claimant["username"], {
-            "points": int(claimant.get("points", 0)) + int(task.get("points", 0))
+            "points": int(claimant.get("points", 0) or 0) + int(task.get("points", 0) or 0)
         })
 
+    now_iso = utc_now_iso()
     update_task(task_id, {
         "status": STATUS_APPROVED,
-        "approved_at": utc_now_iso(),
-        "approved_date": utc_now_iso(),
+        "approved_at": now_iso,
+        "approved_date": now_iso,
         "approved_by": current_user["display_name"],
         "approved_by_rank": current_user.get("rank_level", 0),
         "approved_by_section": current_user.get("section", ""),
@@ -1169,6 +1127,15 @@ def delete_task_route(task_id):
     if not (can_delete_open_task(task, current_user) or is_master_admin(current_user)):
         set_error("You cannot delete that task.")
         return redirect(url_for("home"))
+
+    if task.get("status") == STATUS_APPROVED:
+        claimed_by_username = task.get("claimed_by_username")
+        claimant = get_user_by_username(claimed_by_username) if claimed_by_username else None
+        if claimant:
+            current_points = int(claimant.get("points", 0) or 0)
+            task_points = int(task.get("points", 0) or 0)
+            new_points = max(0, current_points - task_points)
+            update_user(claimant["username"], {"points": new_points})
 
     delete_task(task_id)
     set_message("Task deleted.")
