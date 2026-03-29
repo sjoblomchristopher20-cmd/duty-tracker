@@ -452,6 +452,7 @@ HTML = """
                     | {{ current_user.section }}
                     | Points: <strong>{{ current_user.points }}</strong>
                 </div>
+                <p>show_admin_panel = {{ show_admin_panel }}</p>
             </div>
             <div class="topbar-right">
                 <form method="POST" action="/logout">
@@ -496,7 +497,7 @@ HTML = """
             </div>
         </div>
 
-        {% if current_user.is_master_admin %}
+        {% if show_admin_panel %}
         <h2>Master Admin Panel</h2>
         <div class="grid-2">
             <form class="panel-form" method="POST" action="/add_user">
@@ -912,9 +913,12 @@ def home():
     resettable_users = [u for u in all_users if not u.get("is_master_admin")]
     manageable_users = [u for u in all_users if not u.get("is_master_admin")]
 
+    show_admin_panel = bool(current_user.get("is_master_admin"(current_user))
+    
     return render_template_string(
         HTML,
         current_user=current_user,
+        show_admin_panel=show_admin_panel
         can_create_users=can_create_users(current_user),
         can_reset_passwords=can_reset_passwords(current_user),
         can_create_tasks=can_create_tasks(current_user),
