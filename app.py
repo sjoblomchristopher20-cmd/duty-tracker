@@ -447,13 +447,10 @@ HTML = """
                 <h1>Duty Tracker</h1>
                 <div>
                     Logged in as <strong>{{ current_user.display_name }}</strong>
-                    {% if not current_user.is_master_admin %}
+                    {% if current_user.is_master_admin %} | Master Admin{% endif %}
                     | {{ current_user.rank }}
                     | {{ current_user.section }}
                     | Points: <strong>{{ current_user.points }}</strong>
-                    {% else %}
-                    | Master Admin
-                    {% endif %}
                 </div>
             </div>
             <div class="topbar-right">
