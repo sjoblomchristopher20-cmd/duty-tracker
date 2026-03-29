@@ -145,6 +145,10 @@ HTML = """
         .small {
             font-size: 12px;
         }
+        .admin-actions form {
+            display: inline-block;
+            margin-right: 8px;
+        }
     </style>
 </head>
 <body>
@@ -305,28 +309,60 @@ HTML = """
     <h2>All Users</h2>
     <table>
         <tr>
-            <th>Name</th>
+            <th>First Name</th>
+            <th>Last Name</th>
             <th>Username</th>
             <th>Rank</th>
             <th>Section</th>
             <th>Points</th>
             <th>Status</th>
-            <th>Action</th>
+            <th>Save</th>
+            <th>Actions</th>
         </tr>
         {% for user in manageable_users %}
         <tr>
-            <td>{{ user.display_name }}</td>
-            <td>{{ user.username }}</td>
-            <td>{{ user.rank }}</td>
-            <td>{{ user.section }}</td>
-            <td>{{ user.points }}</td>
-            <td>{% if user.is_active %}Active{% else %}Inactive{% endif %}</td>
-            <td>
+            <form method="POST" action="/update_user/{{ user.username }}">
+                <td>{{ user.first_name }}</td>
+                <td>
+                    <input type="text" name="last_name" value="{{ user.last_name }}" required>
+                </td>
+                <td>{{ user.username }}</td>
+                <td>
+                    <select name="rank" required>
+                        {% for rank_name in rank_names %}
+                            <option value="{{ rank_name }}" {% if user.rank == rank_name %}selected{% endif %}>
+                                {{ rank_name }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>
+                    <select name="section" required>
+                        {% for section in sections %}
+                            <option value="{{ section }}" {% if user.section == section %}selected{% endif %}>
+                                {{ section }}
+                            </option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>{{ user.points }}</td>
+                <td>{% if user.is_active %}Active{% else %}Inactive{% endif %}</td>
+                <td>
+                    <button type="submit">Save</button>
+                </td>
+            </form>
+            <td class="admin-actions">
                 <form class="inline-form" method="POST" action="/toggle_user_active/{{ user.username }}">
                     <button type="submit">
                         {% if user.is_active %}Deactivate{% else %}Activate{% endif %}
                     </button>
                 </form>
+
+                {% if not user.is_active %}
+                <form class="inline-form" method="POST" action="/delete_user/{{ user.username }}">
+                    <button type="submit">Delete</button>
+                </form>
+                {% endif %}
             </td>
         </tr>
         {% endfor %}
@@ -952,6 +988,38 @@ def reset_password():
     return redirect(url_for("home"))
 
 
+@app.route("/update_user/<username>", methods=["POST"])
+def update_user_route(username):
+    current_user = get_current_user()
+    if not is_master_admin(current_user):
+        set_error("Unauthorized.")
+        return redirect(url_for("home"))
+
+    target_user = get_user_by_username(username)
+    if not target_user or target_user.get("is_master_admin"):
+        set_error("Cannot update that user.")
+        return redirect(url_for("home"))
+
+    last_name = request.form["last_name"].strip()
+    rank = request.form["rank"]
+    section = request.form["section"]
+
+    if not last_name or rank not in RANKS or section not in SECTIONS:
+        set_error("Invalid user update.")
+        return redirect(url_for("home"))
+
+    update_user(username, {
+        "last_name": last_name,
+        "display_name": format_display_name(target_user.get("first_name", ""), last_name),
+        "rank": rank,
+        "rank_level": RANKS[rank],
+        "section": section,
+    })
+
+    set_message(f"Updated user {username}.")
+    return redirect(url_for("home"))
+
+
 @app.route("/toggle_user_active/<username>", methods=["POST"])
 def toggle_user_active(username):
     current_user = get_current_user()
@@ -978,12 +1046,20 @@ def delete_user_route(username):
         return redirect(url_for("home"))
 
     target_user = get_user_by_username(username)
-    if target_user and not target_user.get("is_master_admin"):
-        delete_user(username)
-        set_message(f"Deleted user {username}.")
-    else:
-        set_error("Cannot delete that user.")
+    if not target_user:
+        set_error("User not found.")
+        return redirect(url_for("home"))
 
+    if target_user.get("is_master_admin"):
+        set_error("Cannot delete that user.")
+        return redirect(url_for("home"))
+
+    if target_user.get("is_active", True):
+        set_error("Deactivate the user before deleting them.")
+        return redirect(url_for("home"))
+
+    delete_user(username)
+    set_message(f"Deleted user {username}.")
     return redirect(url_for("home"))
 
 
