@@ -52,7 +52,9 @@ def format_display_name(first_name: str, last_name: str, rank: str) -> str:
 
 def get_current_user():
     username = session.get("username")
-    return get_user_by_username(username) if username else None
+    if not username:
+        return None
+    return get_user_by_username(username)
 
 
 def is_master_admin(user):
@@ -822,21 +824,21 @@ HTML = """
 
 @app.route("/setup")
 def setup():
-    if not get_user_by_username("sjoblomc"):
+    if not get_user_by_username("training_room"):
         create_user({
-            "first_name": "Christopher",
-            "last_name": "Sjoblom",
-            "display_name": format_display_name("Christopher", "Sjoblom", "SSG"),
-            "username": "sjoblomc",
-            "password": "Sjoblom123",
-            "rank": "SSG",
-            "rank_level": RANKS["SSG"],
-            "section": "Distro",
+            "username": "training_room",
+            "password": "admin123",
+            "first_name": "Training",
+            "last_name": "Room",
+            "display_name": "Training Room",
+            "rank": "ADMIN",
+            "rank_level": 99,
+            "section": "HQ",
             "points": 0,
             "is_master_admin": True,
             "created_at": utc_now_iso(),
         })
-    return "User created"
+    return "Setup complete"
 
 
 @app.route("/", methods=["GET"])
