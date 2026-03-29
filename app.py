@@ -375,6 +375,7 @@ HTML = """
                 <th>Title</th>
                 <th>Points</th>
                 <th>Completed By</th>
+                <th>Completed Rank</th>
                 <th>Section</th>
                 <th>Action</th>
             </tr>
@@ -383,6 +384,7 @@ HTML = """
                 <td>{{ task.title }}</td>
                 <td>{{ task.points }}</td>
                 <td>{{ task.claimed_by }}</td>
+                <td>{{ task.claimed_by_rank }}</td>
                 <td>{{ task.claimed_by_section }}</td>
                 <td>
                     {% if can_approve_map[task.id] %}
@@ -542,9 +544,21 @@ def can_submit_task(task, user):
 
 
 def can_approve_task(task, user):
-    return bool(user) and task.get("status") == STATUS_PENDING and (
-        is_master_admin(user) or user.get("section") == task.get("section_origin")
-    )
+    if not user or task.get("status") != STATUS_PENDING:
+        return False
+
+    if is_master_admin(user):
+        return True
+
+    # Must belong to the task origin section
+    if user.get("section") != task.get("section_origin"):
+        return False
+
+    approver_rank = int(user.get("rank_level", 0) or 0)
+    claimant_rank = int(task.get("claimed_by_rank", 0) or 0)
+
+    # Must be at least one level higher than the person who completed it
+    return approver_rank >= claimant_rank + 1
 
 
 def can_delete_open_task(task, user):
@@ -647,7 +661,7 @@ def home():
 
     pending_tasks = [
         task for task in all_tasks
-        if can_approve and can_approve_task(task, current_user)
+        if can_approve_task(task, current_user)
     ]
 
     approved_history = [task for task in all_tasks if task.get("status") == STATUS_APPROVED]
