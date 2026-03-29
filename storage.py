@@ -12,7 +12,6 @@ def utc_now_iso() -> str:
 
 
 def _clean_dict(data: dict) -> dict:
-    """Return a shallow copy for Firestore writes."""
     return dict(data)
 
 
@@ -38,13 +37,17 @@ def _normalize_user(doc_id: str, data: dict) -> dict:
         "section": data.get("section", ""),
         "points": _safe_int(data.get("points"), 0),
         "is_master_admin": bool(data.get("is_master_admin", False)),
+        "is_active": bool(data.get("is_active", True)),
         "created_at": data.get("created_at"),
+        "last_login_at": data.get("last_login_at"),
     }
 
 
 def _normalize_task(doc_id: str, data: dict) -> dict:
     data = data or {}
     claimed_by_rank_raw = data.get("claimed_by_rank")
+    approved_by_rank_raw = data.get("approved_by_rank")
+    rejected_by_rank_raw = data.get("rejected_by_rank")
 
     return {
         "id": data.get("id", doc_id),
@@ -52,6 +55,8 @@ def _normalize_task(doc_id: str, data: dict) -> dict:
         "points": _safe_int(data.get("points"), 0),
         "section_origin": data.get("section_origin", ""),
         "claim_access": data.get("claim_access", "All"),
+        "min_rank_level": _safe_int(data.get("min_rank_level"), 1),
+        "due_date": data.get("due_date"),
         "created_by": data.get("created_by", ""),
         "created_by_rank": _safe_int(data.get("created_by_rank"), 0),
         "created_by_section": data.get("created_by_section", ""),
@@ -59,6 +64,16 @@ def _normalize_task(doc_id: str, data: dict) -> dict:
         "claimed_by_username": data.get("claimed_by_username"),
         "claimed_by_rank": _safe_int(claimed_by_rank_raw, None) if claimed_by_rank_raw is not None else None,
         "claimed_by_section": data.get("claimed_by_section"),
+        "claimed_at": data.get("claimed_at"),
+        "submitted_at": data.get("submitted_at"),
+        "approved_at": data.get("approved_at"),
+        "approved_by": data.get("approved_by"),
+        "approved_by_rank": _safe_int(approved_by_rank_raw, None) if approved_by_rank_raw is not None else None,
+        "approved_by_section": data.get("approved_by_section"),
+        "rejected_at": data.get("rejected_at"),
+        "rejected_by": data.get("rejected_by"),
+        "rejected_by_rank": _safe_int(rejected_by_rank_raw, None) if rejected_by_rank_raw is not None else None,
+        "rejected_by_section": data.get("rejected_by_section"),
         "status": data.get("status", "available"),
         "rejection_note": data.get("rejection_note", ""),
         "last_action": data.get("last_action", ""),
@@ -67,10 +82,6 @@ def _normalize_task(doc_id: str, data: dict) -> dict:
         "created_at": data.get("created_at"),
     }
 
-
-# -----------------
-# User helpers
-# -----------------
 
 def get_all_users():
     docs = db.collection(USERS_COLLECTION).stream()
@@ -88,26 +99,11 @@ def get_user_by_username(username: str):
     return _normalize_user(doc.id, doc.to_dict())
 
 
-def get_user_by_display_name(display_name: str):
-    if not display_name:
-        return None
-
-    matches = (
-        db.collection(USERS_COLLECTION)
-        .where("display_name", "==", display_name)
-        .limit(1)
-        .stream()
-    )
-    for doc in matches:
-        return _normalize_user(doc.id, doc.to_dict())
-
-    return None
-
-
 def create_user(user_data: dict):
     username = user_data["username"]
     payload = dict(user_data)
     payload.setdefault("created_at", utc_now_iso())
+    payload.setdefault("is_active", True)
     db.collection(USERS_COLLECTION).document(username).set(_clean_dict(payload))
 
 
@@ -121,10 +117,6 @@ def update_user(username: str, updates: dict):
 def delete_user(username: str):
     db.collection(USERS_COLLECTION).document(username).delete()
 
-
-# -----------------
-# Task helpers
-# -----------------
 
 def get_all_tasks():
     docs = db.collection(TASKS_COLLECTION).stream()
@@ -147,6 +139,7 @@ def create_task(task_data: dict):
     payload = dict(task_data)
     payload["id"] = ref.id
     payload.setdefault("created_at", utc_now_iso())
+    payload.setdefault("min_rank_level", 1)
     ref.set(_clean_dict(payload))
     return ref.id
 
@@ -163,10 +156,6 @@ def delete_task(task_id: str):
 
 
 def auto_archive_old_tasks(from_status: str, to_status: str, days_old: int = 30):
-    """
-    Archives tasks older than N days based on approved_date.
-    If approved_date is missing or malformed, skips that task.
-    """
     now = datetime.now(timezone.utc)
     docs = (
         db.collection(TASKS_COLLECTION)
