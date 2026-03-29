@@ -8,6 +8,7 @@ from storage import (
     update_user,
     delete_user,
     get_all_tasks,
+    get_task,
     create_task,
     update_task,
     delete_task,
@@ -509,46 +510,20 @@ def is_master_admin(user):
 
 
 def is_sgt_plus(user):
-    return bool(user and user.get("rank_level", 0) >= 2)
+    return bool(user and int(user.get("rank_level", 0)) >= 2)
 
 
 def is_msg_plus(user):
-    return bool(user and user.get("rank_level", 0) >= 5)
+    return bool(user and int(user.get("rank_level", 0)) >= 5)
 
 
 def can_create_tasks(user):
     return is_master_admin(user) or is_sgt_plus(user)
 
 
-def can_create_users(user):
-    return is_master_admin(user)
-
-
-def can_reset_passwords(user):
-    return is_master_admin(user)
-
-
-def can_delete_users(user):
-    return is_master_admin(user)
-
-
-def can_force_delete(user):
-    return is_master_admin(user)
-
-
-def can_see_task(task, user):
-    if not user:
-        return False
-    if task["claim_access"] == "All":
-        return True
-    return user.get("section") == task.get("claim_access")
-
-
 def can_claim_task(task, user):
-    return (
-        bool(user)
-        and task.get("status") == STATUS_AVAILABLE
-        and can_see_task(task, user)
+    return bool(user) and task.get("status") == STATUS_AVAILABLE and (
+        task.get("claim_access") == "All" or user.get("section") == task.get("claim_access")
     )
 
 
@@ -645,18 +620,21 @@ def home():
             ),
         )
 
+    show_admin_panel = is_master_admin(current_user)
+
     leaderboard = build_leaderboard(all_users)
     section_totals = build_section_totals(all_users)
 
     available_tasks = [
         task for task in all_tasks
-        if task["status"] == STATUS_AVAILABLE and can_see_task(task, current_user)
+        if task.get("status") == STATUS_AVAILABLE
+        and (task.get("claim_access") == "All" or current_user.get("section") == task.get("claim_access"))
     ]
 
     my_tasks = [
         task for task in all_tasks
-        if task.get("claimed_by_username") == current_user["username"]
-        and task["status"] in [STATUS_CLAIMED, STATUS_PENDING]
+        if task.get("claimed_by_username") == current_user.get("username")
+        and task.get("status") in [STATUS_CLAIMED, STATUS_PENDING]
     ]
 
     pending_tasks = [
@@ -664,9 +642,8 @@ def home():
         if can_approve_task(task, current_user)
     ]
 
-    approved_history = [task for task in all_tasks if task["status"] == STATUS_APPROVED]
-    archived_history = [task for task in all_tasks if task["status"] == STATUS_ARCHIVED]
-
+    approved_history = [task for task in all_tasks if task.get("status") == STATUS_APPROVED]
+    archived_history = [task for task in all_tasks if task.get("status") == STATUS_ARCHIVED]
     history_rows = approved_history if history_tab == "approved" else archived_history
 
     if filter_name:
@@ -676,31 +653,26 @@ def home():
     if filter_origin:
         history_rows = [t for t in history_rows if (t.get("section_origin") or "") == filter_origin]
 
-    completed_names = sorted({t.get("claimed_by") for t in approved_history + archived_history if t.get("claimed_by")})
+    completed_names = sorted(
+        {t.get("claimed_by") for t in approved_history + archived_history if t.get("claimed_by")}
+    )
 
     can_claim_map = {task["id"]: can_claim_task(task, current_user) for task in available_tasks}
     can_submit_map = {task["id"]: can_submit_task(task, current_user) for task in my_tasks}
     can_approve_map = {task["id"]: can_approve_task(task, current_user) for task in pending_tasks}
     can_delete_map = {
-        task["id"]: can_delete_open_task(task, current_user) or can_force_delete(current_user)
+        task["id"]: can_delete_open_task(task, current_user) or is_master_admin(current_user)
         for task in history_rows
     }
 
     resettable_users = [u for u in all_users if not u.get("is_master_admin")]
     manageable_users = [u for u in all_users if not u.get("is_master_admin")]
 
-    show_admin_panel = bool(current_user and current_user.get("is_master_admin"))
-
     return render_template_string(
         HTML,
         current_user=current_user,
         show_admin_panel=show_admin_panel,
-        can_create_users=can_create_users(current_user),
-        can_reset_passwords=can_reset_passwords(current_user),
         can_create_tasks=can_create_tasks(current_user),
-        can_see_archived=is_sgt_plus(current_user) or is_master_admin(current_user),
-        is_msg_plus=is_msg_plus(current_user),
-        can_force_delete=can_force_delete(current_user),
         leaderboard=leaderboard,
         section_totals=section_totals,
         sections=SECTIONS,
@@ -752,7 +724,7 @@ def logout():
 @app.route("/add_user", methods=["POST"])
 def add_user_route():
     current_user = get_current_user()
-    if not can_create_users(current_user):
+    if not is_master_admin(current_user):
         return redirect(url_for("home"))
 
     first_name = request.form["first_name"].strip()
@@ -784,14 +756,13 @@ def add_user_route():
         "is_master_admin": False,
         "created_at": utc_now_iso(),
     })
-
     return redirect(url_for("home"))
 
 
 @app.route("/reset_password", methods=["POST"])
 def reset_password():
     current_user = get_current_user()
-    if not can_reset_passwords(current_user):
+    if not is_master_admin(current_user):
         return redirect(url_for("home"))
 
     target_username = request.form["target_username"].strip()
@@ -807,7 +778,7 @@ def reset_password():
 @app.route("/delete_user/<username>", methods=["POST"])
 def delete_user_route(username):
     current_user = get_current_user()
-    if not can_delete_users(current_user):
+    if not is_master_admin(current_user):
         return redirect(url_for("home"))
 
     target_user = get_user_by_username(username)
@@ -853,14 +824,13 @@ def add_task_route():
         "approved_date": None,
         "archived_date": None,
     })
-
     return redirect(url_for("home"))
 
 
 @app.route("/claim_task/<task_id>", methods=["POST"])
 def claim_task_route(task_id):
     current_user = get_current_user()
-    task = next((t for t in get_all_tasks() if t["id"] == task_id), None)
+    task = get_task(task_id)
     if not task or not can_claim_task(task, current_user):
         return redirect(url_for("home"))
 
@@ -878,7 +848,7 @@ def claim_task_route(task_id):
 @app.route("/submit_task/<task_id>", methods=["POST"])
 def submit_task_route(task_id):
     current_user = get_current_user()
-    task = next((t for t in get_all_tasks() if t["id"] == task_id), None)
+    task = get_task(task_id)
     if not task or not can_submit_task(task, current_user):
         return redirect(url_for("home"))
 
@@ -893,7 +863,7 @@ def submit_task_route(task_id):
 @app.route("/approve_task/<task_id>", methods=["POST"])
 def approve_task_route(task_id):
     current_user = get_current_user()
-    task = next((t for t in get_all_tasks() if t["id"] == task_id), None)
+    task = get_task(task_id)
     if not task or not can_approve_task(task, current_user):
         return redirect(url_for("home"))
 
@@ -916,7 +886,7 @@ def approve_task_route(task_id):
 @app.route("/reject_task/<task_id>", methods=["POST"])
 def reject_task_route(task_id):
     current_user = get_current_user()
-    task = next((t for t in get_all_tasks() if t["id"] == task_id), None)
+    task = get_task(task_id)
     if not task or not can_approve_task(task, current_user):
         return redirect(url_for("home"))
 
@@ -933,11 +903,11 @@ def reject_task_route(task_id):
 @app.route("/delete_task/<task_id>", methods=["POST"])
 def delete_task_route(task_id):
     current_user = get_current_user()
-    task = next((t for t in get_all_tasks() if t["id"] == task_id), None)
+    task = get_task(task_id)
     if not task:
         return redirect(url_for("home"))
 
-    if not (can_delete_open_task(task, current_user) or can_force_delete(current_user)):
+    if not (can_delete_open_task(task, current_user) or is_master_admin(current_user)):
         return redirect(url_for("home"))
 
     delete_task(task_id)
