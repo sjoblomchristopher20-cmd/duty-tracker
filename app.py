@@ -513,7 +513,7 @@ def is_sgt_plus(user):
 
 
 def is_msg_plus(user):
-    return bool(user and user.get("rank_level", 0) >= 6)
+    return bool(user and user.get("rank_level", 0) >= 5)
 
 
 def can_create_tasks(user):
