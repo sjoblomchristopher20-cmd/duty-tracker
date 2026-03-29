@@ -367,6 +367,7 @@ HTML = """
         <p class="muted">You have no active tasks right now.</p>
     {% endif %}
 
+    {% if can_approve %}
     <h2>Approval Queue</h2>
     {% if pending_tasks %}
         <table>
@@ -401,6 +402,7 @@ HTML = """
         </table>
     {% else %}
         <p class="muted">No tasks pending approval.</p>
+    {% endif %}
     {% endif %}
 
     <h2>History</h2>
@@ -521,6 +523,10 @@ def can_create_tasks(user):
     return is_master_admin(user) or is_sgt_plus(user)
 
 
+def can_approve_tasks(user):
+    return bool(user) and (is_master_admin(user) or is_sgt_plus(user))
+
+
 def can_claim_task(task, user):
     return bool(user) and task.get("status") == STATUS_AVAILABLE and (
         task.get("claim_access") == "All" or user.get("section") == task.get("claim_access")
@@ -611,6 +617,7 @@ def home():
             HTML,
             current_user=None,
             show_admin_panel=False,
+            can_approve=False,
             login_error=session.pop("login_error", None),
             public_section=public_section,
             public_section_options=["All"] + SECTIONS,
@@ -621,6 +628,7 @@ def home():
         )
 
     show_admin_panel = is_master_admin(current_user)
+    can_approve = can_approve_tasks(current_user)
 
     leaderboard = build_leaderboard(all_users)
     section_totals = build_section_totals(all_users)
@@ -639,7 +647,7 @@ def home():
 
     pending_tasks = [
         task for task in all_tasks
-        if can_approve_task(task, current_user)
+        if can_approve and can_approve_task(task, current_user)
     ]
 
     approved_history = [task for task in all_tasks if task.get("status") == STATUS_APPROVED]
@@ -673,6 +681,7 @@ def home():
         current_user=current_user,
         show_admin_panel=show_admin_panel,
         can_create_tasks=can_create_tasks(current_user),
+        can_approve=can_approve,
         leaderboard=leaderboard,
         section_totals=section_totals,
         sections=SECTIONS,
@@ -863,6 +872,9 @@ def submit_task_route(task_id):
 @app.route("/approve_task/<task_id>", methods=["POST"])
 def approve_task_route(task_id):
     current_user = get_current_user()
+    if not can_approve_tasks(current_user):
+        return "Unauthorized", 403
+
     task = get_task(task_id)
     if not task or not can_approve_task(task, current_user):
         return redirect(url_for("home"))
@@ -886,6 +898,9 @@ def approve_task_route(task_id):
 @app.route("/reject_task/<task_id>", methods=["POST"])
 def reject_task_route(task_id):
     current_user = get_current_user()
+    if not can_approve_tasks(current_user):
+        return "Unauthorized", 403
+
     task = get_task(task_id)
     if not task or not can_approve_task(task, current_user):
         return redirect(url_for("home"))
